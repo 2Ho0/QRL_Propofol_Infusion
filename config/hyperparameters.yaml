@@ -1,0 +1,184 @@
+# Quantum RL Propofol Infusion Control - Hyperparameters
+# Based on CBIM (Closed-loop BIS-guided Infusion Model) paper
+
+# =============================================================================
+# Environment Configuration
+# =============================================================================
+environment:
+  # BIS Target and Safety Bounds
+  bis_target: 50              # Target BIS value for moderate hypnosis
+  bis_min: 40                 # Minimum safe BIS (below = too deep)
+  bis_max: 60                 # Maximum safe BIS (above = patient awakening)
+  bis_baseline: 97            # Baseline BIS when awake (E0)
+  
+  # Propofol Infusion Bounds (μg/kg/min)
+  dose_min: 0.0
+  dose_max: 200.0
+  
+  # Simulation Parameters
+  dt: 5.0                     # Time step in seconds
+  episode_duration: 3600      # Episode duration in seconds (60 min)
+  
+  # Initial Bolus (optional, for induction)
+  enable_bolus: true
+  bolus_dose: 2.0             # mg/kg bolus for induction
+
+# =============================================================================
+# Schnider PK/PD Model Parameters (Population Defaults)
+# =============================================================================
+pkpd_model:
+  model_type: "schnider"      # Use Schnider model
+  
+  # Default Patient Demographics (can be overridden)
+  default_patient:
+    age: 40                   # years
+    weight: 70                # kg
+    height: 170               # cm
+    gender: "male"            # male or female
+  
+  # Schnider Model Fixed Parameters
+  schnider:
+    # Rate constants (min^-1)
+    k10: 0.443                # Elimination rate constant
+    k12: 0.302                # Central to shallow peripheral
+    k13: 0.196                # Central to deep peripheral
+    k21: 0.092                # Shallow peripheral to central
+    k31: 0.0048               # Deep peripheral to central
+    ke0: 0.456                # Effect-site equilibration
+    
+    # Volume of central compartment (L)
+    v1: 4.27
+    
+  # Hill/Sigmoid Emax Model Parameters
+  hill_model:
+    e0: 97.0                  # Baseline effect (awake BIS)
+    emax: 97.0                # Maximum effect
+    ec50: 3.4                 # Effect-site concentration at 50% effect (μg/ml)
+    gamma: 3.0                # Hill coefficient (steepness)
+
+# =============================================================================
+# Quantum Circuit Configuration
+# =============================================================================
+quantum:
+  n_qubits: 2                 # Number of qubits
+  n_layers: 4                 # Number of variational layers
+  
+  # Encoding Strategy
+  encoding: "angle"           # "angle" or "amplitude"
+  
+  # Device Configuration
+  device: "default.qubit"     # PennyLane device
+  shots: null                 # null for analytic simulation
+  
+  # Feature Selection for 2-qubit encoding
+  # Indices of state features to encode (0: BIS_error, 1: Ce_normalized)
+  feature_indices: [0, 1]
+  
+  # Action mapping
+  action_scale: 200.0         # Max propofol dose for action scaling
+
+# =============================================================================
+# Classical Network Configuration
+# =============================================================================
+networks:
+  # Value Network (Critic)
+  critic:
+    hidden_dims: [256, 256]
+    activation: "relu"
+    
+  # State Encoder (for hybrid approach)
+  encoder:
+    hidden_dims: [64, 32]
+    activation: "relu"
+    output_dim: 2             # Must match n_qubits for angle encoding
+
+# =============================================================================
+# Training Configuration (DDPG-style)
+# =============================================================================
+training:
+  # General
+  algorithm: "ddpg"           # ddpg, td3, or sac
+  total_episodes: 1000
+  max_steps_per_episode: 720  # 3600s / 5s = 720 steps
+  
+  # Learning Rates
+  actor_lr: 0.0001            # Learning rate for quantum policy
+  critic_lr: 0.001            # Learning rate for critic
+  encoder_lr: 0.0001          # Learning rate for state encoder
+  
+  # DDPG Specific
+  gamma: 0.99                 # Discount factor
+  tau: 0.005                  # Soft update coefficient
+  
+  # Replay Buffer
+  buffer_size: 100000
+  batch_size: 64
+  warmup_steps: 1000          # Random actions before training
+  
+  # Exploration
+  noise_type: "ou"            # "ou" (Ornstein-Uhlenbeck) or "gaussian"
+  noise_sigma: 0.2            # Noise standard deviation
+  noise_theta: 0.15           # OU noise theta
+  noise_decay: 0.995          # Noise decay per episode
+  noise_min: 0.01             # Minimum noise
+  
+  # Update Frequency
+  update_every: 1             # Update networks every N steps
+  policy_delay: 2             # TD3: delay policy updates
+  
+  # Gradient Clipping
+  max_grad_norm: 1.0
+
+# =============================================================================
+# Reward Configuration
+# =============================================================================
+reward:
+  # Weights for reward components
+  weights:
+    bis_error: 1.0            # Weight for BIS error penalty
+    dose_penalty: 0.01        # Weight for dose magnitude penalty
+    dose_change: 0.001        # Weight for dose change penalty
+    stability_bonus: 0.1      # Weight for maintaining stable BIS
+  
+  # Safety Penalties
+  safety:
+    overdose_threshold: 150   # μg/kg/min threshold for overdose warning
+    overdose_penalty: -10.0   # Large penalty for overdose
+    underdose_bis: 70         # BIS threshold for patient awakening
+    underdose_penalty: -5.0   # Penalty for patient awakening
+    critical_low_bis: 35      # Critical low BIS
+    critical_penalty: -20.0   # Very large penalty for dangerous depth
+
+# =============================================================================
+# Evaluation Metrics (following CBIM paper)
+# =============================================================================
+metrics:
+  # Performance Error (PE) based metrics
+  calculate_mdpe: true        # Median Performance Error
+  calculate_mdape: true       # Median Absolute Performance Error
+  calculate_wobble: true      # Measure of intra-individual variability
+  calculate_divergence: true  # Measure of trend in PE
+  
+  # Target Window
+  target_window:
+    lower: 45
+    upper: 55
+    
+  # Settling Time (time to reach target window)
+  settling_time_threshold: 0.95  # % of time in target window
+
+# =============================================================================
+# Logging and Checkpointing
+# =============================================================================
+logging:
+  log_dir: "logs"
+  save_dir: "checkpoints"
+  log_interval: 10            # Log every N episodes
+  save_interval: 100          # Save checkpoint every N episodes
+  tensorboard: true           # Use TensorBoard logging
+  verbose: true               # Print training progress
+
+# =============================================================================
+# Random Seeds
+# =============================================================================
+seed: 42

@@ -6,17 +6,29 @@ This module implements a Gymnasium-compatible environment for propofol
 infusion control using reinforcement learning. The environment wraps
 the patient simulator and provides the standard RL interface.
 
+Following CBIM Paper Formulations:
+----------------------------------
+- Formulation (36): BIS slope = BIS(t) - BIS(t-1)
+- Formulation (37): BIS error = BIS(t) - BIS_target(t)
+- Formulation (38): PPF_acc(t) = Σ PPF(i) for i=t-W to t (cumulative propofol)
+- Formulation (39): RFTN_acc(t) = Σ RFTN(i) for i=t-W to t (cumulative remifentanil)
+- Formulation (40): R(s,a) = 1/(|g - BIS(t+1)| + α) (reward function)
+
 Environment Specification:
 --------------------------
-- Observation Space: Box(2,) - [BIS_error_normalized, Ce_normalized]
+- Observation Space: Extended state vector per Fig.4 of paper
+  [BIS_error, BIS_slope, Ce_ppf, Ce_rftn, PPF_acc, RFTN_acc, prev_dose, ...]
 - Action Space: Box(1,) - Continuous propofol infusion rate [0, 1] scaled to [0, max_dose]
-- Reward: Negative squared BIS error with safety penalties
+- Reward: Formulation (40) based reward with safety penalties
 - Episode Length: Configurable (default 60 minutes / 720 steps at 5s intervals)
 
-Following the CBIM paper formulation:
-- Target BIS: 50 (moderate hypnosis)
-- Safe Range: 40-60
-- Infusion Rate: 0-200 μg/kg/min
+Remifentanil External Input:
+----------------------------
+Remifentanil is treated as external input (not controlled by RL agent).
+Random values are sampled based on typical surgical infusion ranges:
+- Induction: 0.5-1.0 μg/kg/min
+- Maintenance: 0.1-0.4 μg/kg/min
+- Variable patterns simulating surgical stimulation changes
 """
 
 import numpy as np
@@ -26,7 +38,103 @@ from typing import Optional, Tuple, Dict, Any, List
 import yaml
 from pathlib import Path
 
-from .patient_simulator import PatientSimulator, PatientParameters, SchniderModel
+from .patient_simulator import (
+    PatientSimulator, 
+    PatientParameters, 
+    SchniderModel,
+    BISModelType,
+    DrugInteractionParams
+)
+
+
+class RemifentanilSchedule:
+    """
+    External remifentanil infusion schedule based on surgical data.
+    
+    Simulates realistic remifentanil administration patterns during surgery:
+    - Induction phase: Higher initial rate
+    - Maintenance phase: Lower baseline with variations
+    - Stimulation events: Temporary increases during surgical stimulation
+    
+    Based on typical clinical ranges from CBIM paper and surgical data.
+    """
+    
+    def __init__(
+        self,
+        base_rate: float = 0.2,           # ng/kg/min baseline
+        induction_rate: float = 0.5,      # ng/kg/min during induction
+        induction_duration: float = 300,  # seconds
+        stimulation_prob: float = 0.02,   # Probability of stimulation event per step
+        stimulation_increase: float = 0.3, # Additional rate during stimulation
+        stimulation_duration: int = 12,    # Steps (60 seconds at dt=5)
+        noise_std: float = 0.05,           # Random variation
+        seed: Optional[int] = None
+    ):
+        """
+        Initialize remifentanil schedule.
+        
+        Args:
+            base_rate: Baseline maintenance rate (ng/kg/min)
+            induction_rate: Rate during induction phase (ng/kg/min)
+            induction_duration: Duration of induction phase (seconds)
+            stimulation_prob: Probability of surgical stimulation event
+            stimulation_increase: Additional rate during stimulation
+            stimulation_duration: Duration of stimulation response (steps)
+            noise_std: Standard deviation of random noise
+            seed: Random seed
+        """
+        self.base_rate = base_rate
+        self.induction_rate = induction_rate
+        self.induction_duration = induction_duration
+        self.stimulation_prob = stimulation_prob
+        self.stimulation_increase = stimulation_increase
+        self.stimulation_duration = stimulation_duration
+        self.noise_std = noise_std
+        
+        self.rng = np.random.default_rng(seed)
+        self.reset()
+    
+    def reset(self):
+        """Reset the schedule state."""
+        self.time = 0.0
+        self.stimulation_countdown = 0
+        self.current_rate = self.induction_rate
+    
+    def get_rate(self, time: float, dt: float = 5.0) -> float:
+        """
+        Get remifentanil rate for current time.
+        
+        Args:
+            time: Current simulation time (seconds)
+            dt: Time step (seconds)
+        
+        Returns:
+            Remifentanil infusion rate (ng/kg/min)
+        """
+        self.time = time
+        
+        # Induction phase
+        if time < self.induction_duration:
+            # Gradual decrease from induction to maintenance
+            progress = time / self.induction_duration
+            base = self.induction_rate * (1 - progress) + self.base_rate * progress
+        else:
+            base = self.base_rate
+        
+        # Handle ongoing stimulation
+        if self.stimulation_countdown > 0:
+            self.stimulation_countdown -= 1
+            base += self.stimulation_increase
+        
+        # Check for new stimulation event
+        if self.rng.random() < self.stimulation_prob:
+            self.stimulation_countdown = self.stimulation_duration
+            base += self.stimulation_increase
+        
+        # Add noise
+        rate = base + self.rng.normal(0, self.noise_std)
+        
+        return max(0.0, rate)
 
 
 class PropofolEnv(gym.Env):
@@ -37,28 +145,34 @@ class PropofolEnv(gym.Env):
     the agent must maintain BIS (Bispectral Index) within a target
     range by adjusting propofol infusion rates.
     
-    State Space:
-        The observation is a 4-dimensional vector:
-        - obs[0]: Normalized BIS error = (BIS - target) / 50
-        - obs[1]: Normalized effect-site concentration = Ce / EC50
-        - obs[2]: Normalized rate of change of BIS (dBIS/dt approximation)
-        - obs[3]: Normalized previous dose = prev_dose / max_dose
+    Extended State Space (following CBIM paper Fig.4):
+        The observation includes time-series features:
+        - obs[0]: Normalized BIS error = (BIS - target) / 50  [Formulation 37]
+        - obs[1]: Normalized BIS slope = dBIS/dt / 10         [Formulation 36]
+        - obs[2]: Normalized Ce_ppf = Ce_ppf / EC50
+        - obs[3]: Normalized Ce_rftn = Ce_rftn / EC50
+        - obs[4]: Normalized PPF_acc = cumulative PPF dose    [Formulation 38]
+        - obs[5]: Normalized RFTN_acc = cumulative RFTN dose  [Formulation 39]
+        - obs[6]: Normalized previous dose = prev_dose / max_dose
+        - obs[7]: Normalized time = current_step / max_steps
     
     Action Space:
         Continuous action in [0, 1] representing normalized infusion rate.
         Scaled to [0, max_dose] μg/kg/min for the simulator.
     
-    Reward Function:
-        Following CBIM paper formulation:
-        r(t) = -α * (BIS - target)² - β * dose - γ * |dose_change| + safety_penalties
+    Reward Function - Formulation (40):
+        R(s,a) = 1 / (|g - BIS(t+1)| + α)
+        
+        With additional safety penalties for dangerous states.
     
     Attributes:
-        simulator: Patient PK/PD simulator
+        simulator: Patient PK/PD simulator (with drug interaction model)
+        rftn_schedule: External remifentanil infusion schedule
         config: Environment configuration
         max_steps: Maximum steps per episode
         current_step: Current step in episode
-        prev_dose: Previous infusion rate (for dose change penalty)
-        bis_history: Recent BIS values for dBIS/dt calculation
+        dose_history: History window for cumulative dose calculation
+        bis_history: Recent BIS values for slope calculation
     """
     
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
@@ -69,7 +183,10 @@ class PropofolEnv(gym.Env):
         config_path: Optional[str] = None,
         patient: Optional[PatientParameters] = None,
         render_mode: Optional[str] = None,
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
+        use_drug_interaction: bool = True,
+        reward_type: str = "paper",  # "paper" for Formulation 40, "shaped" for original
+        history_window: int = 12  # Window size for cumulative dose (60 seconds at dt=5)
     ):
         """
         Initialize the Propofol environment.
@@ -80,6 +197,9 @@ class PropofolEnv(gym.Env):
             patient: Specific patient parameters (uses config defaults if None)
             render_mode: Rendering mode ('human' or 'rgb_array')
             seed: Random seed for reproducibility
+            use_drug_interaction: If True, use drug interaction BIS model (Formulation 32)
+            reward_type: "paper" for Formulation 40, "shaped" for original shaped reward
+            history_window: Number of steps for cumulative dose calculation
         """
         super().__init__()
         
@@ -100,6 +220,8 @@ class PropofolEnv(gym.Env):
         
         # Reward configuration
         reward_config = self.config.get('reward', {})
+        self.reward_type = reward_type
+        self.reward_alpha = reward_config.get('alpha', 1.0)  # For Formulation 40
         self.reward_weights = reward_config.get('weights', {
             'bis_error': 1.0,
             'dose_penalty': 0.01,
@@ -118,6 +240,9 @@ class PropofolEnv(gym.Env):
         # Calculate max steps
         self.max_steps = int(self.episode_duration / self.dt)
         
+        # History window for Formulations (38)-(39)
+        self.history_window = history_window
+        
         # Initialize patient parameters
         if patient is not None:
             self.patient = patient
@@ -130,24 +255,40 @@ class PropofolEnv(gym.Env):
                 gender=patient_config.get('gender', 'male')
             )
         
-        # Create simulator
+        # BIS model type
+        self.use_drug_interaction = use_drug_interaction
+        bis_model_type = (BISModelType.DRUG_INTERACTION if use_drug_interaction 
+                         else BISModelType.HILL_SIGMOID)
+        
+        # Create simulator with drug interaction model
         self.seed_value = seed
         self.simulator = PatientSimulator(
             patient=self.patient,
             dt=self.dt,
             noise_std=2.0,
+            seed=seed,
+            bis_model_type=bis_model_type
+        )
+        
+        # Remifentanil external schedule
+        rftn_config = self.config.get('remifentanil', {})
+        self.rftn_schedule = RemifentanilSchedule(
+            base_rate=rftn_config.get('base_rate', 0.2),
+            induction_rate=rftn_config.get('induction_rate', 0.5),
+            induction_duration=rftn_config.get('induction_duration', 300),
+            stimulation_prob=rftn_config.get('stimulation_prob', 0.02),
             seed=seed
         )
         
-        # Define observation and action spaces
-        # Observation: [bis_error_norm, ce_norm, dbis_norm, prev_dose_norm]
+        # Define extended observation space (8 features)
+        # [bis_error, bis_slope, ce_ppf, ce_rftn, ppf_acc, rftn_acc, prev_dose, time]
         self.observation_space = spaces.Box(
-            low=np.array([-2.0, 0.0, -1.0, 0.0], dtype=np.float32),
-            high=np.array([2.0, 5.0, 1.0, 1.0], dtype=np.float32),
+            low=np.array([-2.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            high=np.array([2.0, 1.0, 5.0, 5.0, 5.0, 5.0, 1.0, 1.0], dtype=np.float32),
             dtype=np.float32
         )
         
-        # Action: Normalized dose [0, 1]
+        # Action: Normalized propofol dose [0, 1]
         self.action_space = spaces.Box(
             low=np.array([0.0], dtype=np.float32),
             high=np.array([1.0], dtype=np.float32),
@@ -158,7 +299,9 @@ class PropofolEnv(gym.Env):
         self.current_step = 0
         self.prev_dose = 0.0
         self.prev_bis = 97.0  # Awake BIS
-        self.bis_history = []
+        self.bis_history: List[float] = []
+        self.dose_ppf_history: List[float] = []  # For Formulation (38)
+        self.dose_rftn_history: List[float] = []  # For Formulation (39)
         
         # Rendering
         self.render_mode = render_mode
@@ -166,8 +309,10 @@ class PropofolEnv(gym.Env):
         # Episode history for analysis
         self.episode_history = {
             'bis': [],
-            'ce': [],
-            'dose': [],
+            'ce_ppf': [],
+            'ce_rftn': [],
+            'dose_ppf': [],
+            'dose_rftn': [],
             'reward': [],
             'time': []
         }
@@ -231,6 +376,10 @@ class PropofolEnv(gym.Env):
         """
         super().reset(seed=seed)
         
+        # BIS model type
+        bis_model_type = (BISModelType.DRUG_INTERACTION if self.use_drug_interaction 
+                         else BISModelType.HILL_SIGMOID)
+        
         # Handle patient variation if specified in options
         if options is not None and 'patient' in options:
             self.patient = options['patient']
@@ -238,32 +387,41 @@ class PropofolEnv(gym.Env):
                 patient=self.patient,
                 dt=self.dt,
                 noise_std=2.0,
-                seed=seed or self.seed_value
+                seed=seed or self.seed_value,
+                bis_model_type=bis_model_type
             )
         else:
             self.simulator.reset()
+        
+        # Reset remifentanil schedule
+        self.rftn_schedule.reset()
         
         # Reset state tracking
         self.current_step = 0
         self.prev_dose = 0.0
         self.prev_bis = 97.0  # Awake BIS
         self.bis_history = [97.0] * 5  # Initialize with awake BIS
+        self.dose_ppf_history = [0.0] * self.history_window  # Formulation (38)
+        self.dose_rftn_history = [0.0] * self.history_window  # Formulation (39)
         
         # Clear episode history
         self.episode_history = {
             'bis': [],
-            'ce': [],
-            'dose': [],
+            'ce_ppf': [],
+            'ce_rftn': [],
+            'dose_ppf': [],
+            'dose_rftn': [],
             'reward': [],
             'time': []
         }
         
         # Apply induction bolus if enabled
         if self.enable_bolus:
-            self.simulator.administer_bolus(self.bolus_dose)
+            self.simulator.administer_bolus(self.bolus_dose, drug="propofol")
             # Step forward a bit to let bolus take effect
             for _ in range(3):  # 15 seconds
-                _, bis = self.simulator.step(0.0)
+                rftn_rate = self.rftn_schedule.get_rate(self.simulator.time, self.dt)
+                _, bis = self.simulator.step(0.0, rftn_rate=rftn_rate)
                 self.bis_history.append(bis)
                 self.prev_bis = bis
         
@@ -272,7 +430,8 @@ class PropofolEnv(gym.Env):
         
         info = {
             'bis': self.prev_bis,
-            'ce': self.simulator.state[3],
+            'ce_ppf': self.simulator.state_ppf[3],
+            'ce_rftn': self.simulator.state_rftn[3],
             'patient': {
                 'age': self.patient.age,
                 'weight': self.patient.weight,
@@ -291,36 +450,49 @@ class PropofolEnv(gym.Env):
         Execute one step in the environment.
         
         Args:
-            action: Normalized infusion rate [0, 1]
+            action: Normalized propofol infusion rate [0, 1]
         
         Returns:
             Tuple of (observation, reward, terminated, truncated, info)
         """
-        # Convert normalized action to actual dose
+        # Convert normalized action to actual propofol dose
         action = np.clip(action, 0, 1)
-        dose = float(action[0]) * self.dose_max
+        dose_ppf = float(action[0]) * self.dose_max
         
-        # Step the simulator
-        state, bis = self.simulator.step(dose)
+        # Get remifentanil rate from external schedule
+        dose_rftn = self.rftn_schedule.get_rate(self.simulator.time, self.dt)
         
-        # Update history
+        # Step the simulator with both drugs
+        state, bis = self.simulator.step(dose_ppf, rftn_rate=dose_rftn)
+        
+        # Update BIS history for slope calculation (Formulation 36)
         self.bis_history.append(bis)
         if len(self.bis_history) > 10:
             self.bis_history.pop(0)
         
+        # Update dose histories for cumulative calculation (Formulations 38-39)
+        self.dose_ppf_history.append(dose_ppf)
+        self.dose_rftn_history.append(dose_rftn)
+        if len(self.dose_ppf_history) > self.history_window:
+            self.dose_ppf_history.pop(0)
+        if len(self.dose_rftn_history) > self.history_window:
+            self.dose_rftn_history.pop(0)
+        
         # Calculate reward
-        reward = self._calculate_reward(bis, dose)
+        reward = self._calculate_reward(bis, dose_ppf)
         
         # Record episode history
         self.episode_history['bis'].append(bis)
-        self.episode_history['ce'].append(state[3])
-        self.episode_history['dose'].append(dose)
+        self.episode_history['ce_ppf'].append(self.simulator.state_ppf[3])
+        self.episode_history['ce_rftn'].append(self.simulator.state_rftn[3])
+        self.episode_history['dose_ppf'].append(dose_ppf)
+        self.episode_history['dose_rftn'].append(dose_rftn)
         self.episode_history['reward'].append(reward)
         self.episode_history['time'].append(self.simulator.time)
         
         # Update state
         self.prev_bis = bis
-        self.prev_dose = dose
+        self.prev_dose = dose_ppf
         self.current_step += 1
         
         # Check termination conditions
@@ -341,8 +513,10 @@ class PropofolEnv(gym.Env):
         
         info = {
             'bis': bis,
-            'ce': state[3],
-            'dose': dose,
+            'ce_ppf': self.simulator.state_ppf[3],
+            'ce_rftn': self.simulator.state_rftn[3],
+            'dose_ppf': dose_ppf,
+            'dose_rftn': dose_rftn,
             'time': self.simulator.time,
             'step': self.current_step,
             'in_target_range': self.bis_min <= bis <= self.bis_max
@@ -352,79 +526,112 @@ class PropofolEnv(gym.Env):
     
     def _get_observation(self) -> np.ndarray:
         """
-        Construct observation vector from current state.
+        Construct extended observation vector following CBIM paper Fig.4.
         
         Returns:
-            Observation array: [bis_error_norm, ce_norm, dbis_norm, prev_dose_norm]
+            Observation array: [bis_error, bis_slope, ce_ppf, ce_rftn, 
+                               ppf_acc, rftn_acc, prev_dose, time]
         """
         # Current BIS and concentrations
         bis = self.prev_bis
-        ce = self.simulator.state[3]
-        ec50 = self.simulator.model.params.ec50
+        ce_ppf = self.simulator.state_ppf[3]
+        ce_rftn = self.simulator.state_rftn[3]
+        ec50_ppf = self.simulator.ppf_model.params.ec50
+        ec50_rftn = self.simulator.rftn_model.params.ec50
         
-        # Normalized BIS error: (BIS - target) / 50
+        # Formulation (37): BIS error = BIS - target
         bis_error_norm = (bis - self.bis_target) / 50.0
         
-        # Normalized effect-site concentration
-        ce_norm = ce / ec50
-        
-        # Approximate dBIS/dt from history
+        # Formulation (36): BIS slope = dBIS/dt
         if len(self.bis_history) >= 2:
-            dbis = (self.bis_history[-1] - self.bis_history[-2]) / self.dt
-            dbis_norm = np.clip(dbis / 10.0, -1.0, 1.0)  # Normalize
+            bis_slope = (self.bis_history[-1] - self.bis_history[-2]) / self.dt
+            bis_slope_norm = np.clip(bis_slope / 10.0, -1.0, 1.0)
         else:
-            dbis_norm = 0.0
+            bis_slope_norm = 0.0
+        
+        # Normalized concentrations
+        ce_ppf_norm = ce_ppf / ec50_ppf
+        ce_rftn_norm = ce_rftn / ec50_rftn
+        
+        # Formulation (38): Cumulative propofol dose
+        ppf_acc = sum(self.dose_ppf_history)
+        ppf_acc_norm = ppf_acc / (self.dose_max * self.history_window)
+        
+        # Formulation (39): Cumulative remifentanil dose
+        rftn_acc = sum(self.dose_rftn_history)
+        rftn_acc_norm = rftn_acc / (1.0 * self.history_window)  # Normalize by typical max
         
         # Normalized previous dose
         prev_dose_norm = self.prev_dose / self.dose_max
         
+        # Normalized time
+        time_norm = self.current_step / self.max_steps
+        
         return np.array([
-            bis_error_norm,
-            ce_norm,
-            dbis_norm,
-            prev_dose_norm
+            np.clip(bis_error_norm, -2.0, 2.0),
+            bis_slope_norm,
+            np.clip(ce_ppf_norm, 0.0, 5.0),
+            np.clip(ce_rftn_norm, 0.0, 5.0),
+            np.clip(ppf_acc_norm, 0.0, 5.0),
+            np.clip(rftn_acc_norm, 0.0, 5.0),
+            prev_dose_norm,
+            time_norm
         ], dtype=np.float32)
     
     def _calculate_reward(self, bis: float, dose: float) -> float:
         """
-        Calculate reward based on CBIM paper formulation.
+        Calculate reward based on CBIM paper Formulation (40).
         
-        Reward components:
+        Formulation (40): R(s,a) = 1 / (|g - BIS(t+1)| + α)
+        
+        Or shaped reward with multiple components:
         1. BIS error penalty: -α * ((BIS - target) / target)²
         2. Dose magnitude penalty: -β * dose
         3. Dose change penalty: -γ * |dose - prev_dose|
-        4. Stability bonus: +δ if BIS in target range for sustained period
+        4. Stability bonus: +δ if BIS in target range
         5. Safety penalties for dangerous states
         
         Args:
             bis: Current BIS value
-            dose: Current infusion rate
+            dose: Current propofol infusion rate
         
         Returns:
             Total reward value
         """
-        w = self.reward_weights
         s = self.safety_config
         
-        # 1. BIS error penalty (Performance Error based)
-        # PE = (BIS - target) / target * 100
-        pe = (bis - self.bis_target) / self.bis_target
-        bis_error_penalty = -w['bis_error'] * (pe ** 2)
-        
-        # 2. Dose magnitude penalty (encourage minimal effective dose)
-        dose_penalty = -w['dose_penalty'] * (dose / self.dose_max)
-        
-        # 3. Dose change penalty (encourage smooth control)
-        dose_change = abs(dose - self.prev_dose) / self.dose_max
-        change_penalty = -w['dose_change'] * dose_change
-        
-        # 4. Stability bonus (in target range)
-        if self.bis_min <= bis <= self.bis_max:
-            stability_bonus = w['stability_bonus']
+        if self.reward_type == "paper":
+            # Formulation (40): R(s,a) = 1 / (|g - BIS| + α)
+            bis_error = abs(self.bis_target - bis)
+            reward = 1.0 / (bis_error + self.reward_alpha)
+            
+            # Scale to reasonable range [0, 1] -> [0, 0.1] or so
+            reward = reward * 0.1
+            
         else:
-            stability_bonus = 0.0
+            # Shaped reward (original implementation)
+            w = self.reward_weights
+            
+            # 1. BIS error penalty (Performance Error based)
+            pe = (bis - self.bis_target) / self.bis_target
+            bis_error_penalty = -w['bis_error'] * (pe ** 2)
+            
+            # 2. Dose magnitude penalty
+            dose_penalty = -w['dose_penalty'] * (dose / self.dose_max)
+            
+            # 3. Dose change penalty
+            dose_change = abs(dose - self.prev_dose) / self.dose_max
+            change_penalty = -w['dose_change'] * dose_change
+            
+            # 4. Stability bonus
+            if self.bis_min <= bis <= self.bis_max:
+                stability_bonus = w['stability_bonus']
+            else:
+                stability_bonus = 0.0
+            
+            reward = bis_error_penalty + dose_penalty + change_penalty + stability_bonus
         
-        # 5. Safety penalties
+        # Safety penalties (applied to both reward types)
         safety_penalty = 0.0
         
         # Overdose (high infusion rate)
@@ -439,24 +646,16 @@ class PropofolEnv(gym.Env):
         if bis < s['critical_low_bis']:
             safety_penalty += s['critical_penalty']
         
-        # Total reward
-        reward = (
-            bis_error_penalty +
-            dose_penalty +
-            change_penalty +
-            stability_bonus +
-            safety_penalty
-        )
-        
-        return reward
+        return reward + safety_penalty
     
     def get_episode_metrics(self) -> Dict[str, float]:
         """
         Calculate performance metrics for the episode.
         
-        Following CBIM paper metrics:
-        - MDPE: Median Performance Error
-        - MDAPE: Median Absolute Performance Error  
+        Following CBIM paper metrics - Formulations (50)-(52):
+        - Formulation (50): PE = 100 * (BIS - target) / target
+        - Formulation (51): MDPE = median(PE)
+        - Formulation (52): MDAPE = median(|PE|)
         - Wobble: Intra-individual variability
         - Time in Target: Percentage of time BIS in target range
         
@@ -468,13 +667,13 @@ class PropofolEnv(gym.Env):
         
         bis_array = np.array(self.episode_history['bis'])
         
-        # Performance Error (PE)
+        # Formulation (50): Performance Error (PE)
         pe = (bis_array - self.bis_target) / self.bis_target * 100
         
-        # MDPE: Median Performance Error
+        # Formulation (51): MDPE - Median Performance Error
         mdpe = np.median(pe)
         
-        # MDAPE: Median Absolute Performance Error
+        # Formulation (52): MDAPE - Median Absolute Performance Error
         mdape = np.median(np.abs(pe))
         
         # Wobble: Median absolute deviation from MDPE
@@ -490,8 +689,9 @@ class PropofolEnv(gym.Env):
         # Total reward
         total_reward = sum(self.episode_history['reward'])
         
-        # Mean dose
-        mean_dose = np.mean(self.episode_history['dose'])
+        # Mean doses
+        mean_dose_ppf = np.mean(self.episode_history['dose_ppf'])
+        mean_dose_rftn = np.mean(self.episode_history['dose_rftn'])
         
         return {
             'mdpe': mdpe,
@@ -499,7 +699,8 @@ class PropofolEnv(gym.Env):
             'wobble': wobble,
             'time_in_target': time_in_target,
             'total_reward': total_reward,
-            'mean_dose': mean_dose,
+            'mean_dose_ppf': mean_dose_ppf,
+            'mean_dose_rftn': mean_dose_rftn,
             'final_bis': bis_array[-1] if len(bis_array) > 0 else None
         }
     

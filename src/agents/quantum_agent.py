@@ -5,10 +5,11 @@ Quantum DDPG Agent for Propofol Infusion Control
 This module implements a hybrid Quantum-Classical Deep Deterministic
 Policy Gradient (DDPG) agent for closed-loop propofol infusion control.
 
-Architecture:
--------------
+Architecture (per CBIM Paper Fig.3 & Fig.4):
+---------------------------------------------
 - Actor (Policy): Quantum Policy with VQC (2 qubits, N layers)
-- Critic (Value): Classical Twin Q-Networks for stability
+- Critic (Value): Classical Twin Q-Networks for stability (TD3)
+- Encoder: LSTM or Transformer for temporal feature extraction
 
 The agent follows the DDPG algorithm with:
 1. Experience Replay Buffer
@@ -17,9 +18,15 @@ The agent follows the DDPG algorithm with:
 4. Parameter-shift rule for quantum gradients (via PennyLane)
 
 Following the CBIM paper's RL formulation:
-- State: [BIS_error_normalized, Ce_normalized, dBIS/dt, prev_dose]
-- Action: Continuous propofol infusion rate [0, max_dose]
-- Reward: Negative squared BIS error + safety penalties
+- State s_t: [BIS_error, Ce_PPF, dBIS/dt, u_{t-1}, PPF_acc, RFTN_acc, BIS_slope, RFTN_t]  # (36)-(39)
+- Action a_t: Continuous propofol infusion rate [0, max_dose]
+- Reward R_t = 1 / (|g - BIS| + α)  # (40)
+
+CBIM Paper Formulations:
+------------------------
+- Temporal Feature Extraction via LSTM/Transformer (Fig.4)
+- Twin Q-Learning for stable value estimation (TD3)
+- Soft Target Updates: θ' ← τθ + (1-τ)θ'
 """
 
 import numpy as np
@@ -29,10 +36,11 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from collections import deque
 import random
-from typing import Optional, Dict, List, Tuple, Any
+from typing import Optional, Dict, List, Tuple, Any, Union
 from dataclasses import dataclass
 import yaml
 from pathlib import Path
+from enum import Enum
 
 # Local imports
 import sys
@@ -46,8 +54,20 @@ from models.networks import (
     OrnsteinUhlenbeckNoise,
     GaussianNoise,
     soft_update,
-    hard_update
+    hard_update,
+    LSTMEncoder,
+    TransformerEncoder,
+    HybridEncoder,
+    BISPredictor
 )
+
+
+class EncoderType(Enum):
+    """Encoder architecture type for temporal feature extraction."""
+    NONE = "none"
+    LSTM = "lstm"
+    TRANSFORMER = "transformer"
+    HYBRID = "hybrid"
 
 
 @dataclass
@@ -56,16 +76,30 @@ class Transition:
     A single transition in the environment.
     
     Attributes:
-        state: Current state
-        action: Action taken
-        reward: Reward received
-        next_state: Next state
+        state: Current state s_t  # (36)
+        action: Action taken a_t (propofol dose)
+        reward: Reward received R_t  # (40)
+        next_state: Next state s_{t+1}
         done: Whether episode terminated
     """
     state: np.ndarray
     action: np.ndarray
     reward: float
     next_state: np.ndarray
+    done: bool
+
+
+@dataclass
+class SequenceTransition:
+    """
+    A sequence of transitions for temporal models.
+    
+    For LSTM/Transformer encoders that require sequential input.
+    """
+    states: np.ndarray  # Shape: [seq_len, state_dim]
+    action: np.ndarray
+    reward: float
+    next_states: np.ndarray  # Shape: [seq_len, state_dim]
     done: bool
 
 
@@ -105,10 +139,10 @@ class ReplayBuffer:
         Add a transition to the buffer.
         
         Args:
-            state: Current state
-            action: Action taken
-            reward: Reward received
-            next_state: Next state
+            state: Current state s_t  # (36)
+            action: Action taken a_t
+            reward: Reward received R_t  # (40)
+            next_state: Next state s_{t+1}
             done: Whether episode terminated
         """
         self.buffer.append(Transition(
@@ -148,6 +182,126 @@ class ReplayBuffer:
         return len(self.buffer) >= batch_size
 
 
+class SequenceReplayBuffer:
+    """
+    Sequence-based Replay Buffer for temporal models (LSTM/Transformer).
+    
+    Stores sequences of states for models that need temporal context.
+    
+    Per CBIM Paper Fig.4: LSTM/Transformer encoder receives sequence of states
+    for temporal feature extraction.
+    """
+    
+    def __init__(
+        self, 
+        capacity: int = 100000, 
+        sequence_length: int = 10,
+        seed: Optional[int] = None
+    ):
+        """
+        Initialize sequence replay buffer.
+        
+        Args:
+            capacity: Maximum number of sequences to store
+            sequence_length: Length of each state sequence (T in paper)
+            seed: Random seed for sampling
+        """
+        self.capacity = capacity
+        self.sequence_length = sequence_length
+        self.buffer = deque(maxlen=capacity)
+        self.rng = random.Random(seed)
+        
+        # Current episode buffer for building sequences
+        self.episode_buffer = []
+    
+    def push(
+        self,
+        state: np.ndarray,
+        action: np.ndarray,
+        reward: float,
+        next_state: np.ndarray,
+        done: bool
+    ):
+        """
+        Add a transition and build sequences.
+        
+        Args:
+            state: Current state
+            action: Action taken
+            reward: Reward received
+            next_state: Next state
+            done: Whether episode terminated
+        """
+        self.episode_buffer.append({
+            'state': state,
+            'action': action,
+            'reward': reward,
+            'next_state': next_state,
+            'done': done
+        })
+        
+        # Build sequence if we have enough transitions
+        if len(self.episode_buffer) >= self.sequence_length:
+            # Get last sequence_length states
+            states_seq = np.array([
+                self.episode_buffer[-(self.sequence_length - i)]['state']
+                for i in range(self.sequence_length - 1, -1, -1)
+            ])
+            
+            # Get next_states sequence
+            next_states_seq = np.array([
+                self.episode_buffer[-(self.sequence_length - i)]['next_state']
+                if i < self.sequence_length - 1
+                else next_state
+                for i in range(self.sequence_length - 1, -1, -1)
+            ])
+            
+            self.buffer.append(SequenceTransition(
+                states=states_seq,
+                action=action,
+                reward=reward,
+                next_states=next_states_seq,
+                done=done
+            ))
+        
+        # Reset episode buffer if done
+        if done:
+            self.episode_buffer = []
+    
+    def sample(self, batch_size: int) -> Tuple[torch.Tensor, ...]:
+        """
+        Sample a batch of sequence transitions.
+        
+        Args:
+            batch_size: Number of sequences to sample
+        
+        Returns:
+            Tuple of tensors (states_seq, actions, rewards, next_states_seq, dones)
+            states_seq shape: [batch, seq_len, state_dim]
+        """
+        sequences = self.rng.sample(list(self.buffer), batch_size)
+        
+        states = torch.FloatTensor(np.array([s.states for s in sequences]))
+        actions = torch.FloatTensor(np.array([s.action for s in sequences]))
+        rewards = torch.FloatTensor(np.array([s.reward for s in sequences])).unsqueeze(1)
+        next_states = torch.FloatTensor(np.array([s.next_states for s in sequences]))
+        dones = torch.FloatTensor(np.array([s.done for s in sequences])).unsqueeze(1)
+        
+        return states, actions, rewards, next_states, dones
+    
+    def __len__(self) -> int:
+        """Return current buffer size."""
+        return len(self.buffer)
+    
+    def is_ready(self, batch_size: int) -> bool:
+        """Check if buffer has enough samples for training."""
+        return len(self.buffer) >= batch_size
+    
+    def reset_episode(self):
+        """Reset episode buffer (call at episode start)."""
+        self.episode_buffer = []
+
+
 class QuantumDDPGAgent:
     """
     Hybrid Quantum-Classical DDPG Agent.
@@ -156,12 +310,20 @@ class QuantumDDPGAgent:
     network (actor) and classical neural networks as the value network
     (critic). It follows the DDPG algorithm for continuous action spaces.
     
-    Key Components:
+    Architecture per CBIM Paper (Fig.3 & Fig.4):
+    ---------------------------------------------
+    - Encoder (Optional): LSTM or Transformer for temporal features
     - Quantum Actor: VQC-based policy for action selection
-    - Classical Critic: Twin Q-networks for value estimation
+    - Classical Critic: Twin Q-networks for value estimation (TD3)
     - Target Networks: Slowly updated copies for stable learning
     - Replay Buffer: Experience storage for off-policy learning
     - Exploration Noise: OU or Gaussian noise for exploration
+    
+    CBIM Paper Formulations:
+    ------------------------
+    - State representation: s_t = [e_t, Ce_t, dBIS/dt, u_{t-1}, PPF_acc, RFTN_acc, ...]  # (36)-(39)
+    - Reward function: R_t = 1 / (|g - BIS_t| + α)  # (40)
+    - Soft target update: θ' ← τθ + (1-τ)θ'
     
     Attributes:
         config: Agent configuration
@@ -173,32 +335,47 @@ class QuantumDDPGAgent:
         critic_optimizer: Optimizer for critics
         replay_buffer: Experience replay buffer
         noise: Exploration noise generator
+        encoder: Optional temporal encoder (LSTM/Transformer)
     """
     
     def __init__(
         self,
-        state_dim: int = 4,
+        state_dim: int = 8,  # Extended state per (36)-(39)
         action_dim: int = 1,
         config: Optional[Dict] = None,
         config_path: Optional[str] = None,
         device: str = "cpu",
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
+        encoder_type: Union[str, EncoderType] = EncoderType.NONE,
+        demographics_dim: int = 4,  # [age, height, weight, gender]
+        sequence_length: int = 10  # Temporal window T
     ):
         """
         Initialize the Quantum DDPG agent.
         
         Args:
-            state_dim: Dimension of state space
-            action_dim: Dimension of action space
+            state_dim: Dimension of state space (8 for extended state)  # (36)-(39)
+            action_dim: Dimension of action space (1 for propofol dose)
             config: Configuration dictionary
             config_path: Path to YAML configuration
             device: Device for computation ('cpu' or 'cuda')
             seed: Random seed
+            encoder_type: Type of temporal encoder ('none', 'lstm', 'transformer', 'hybrid')
+            demographics_dim: Dimension of patient demographics [age, height, weight, gender]
+            sequence_length: Length of temporal sequence for LSTM/Transformer
         """
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.device = device
         self.seed = seed
+        self.sequence_length = sequence_length
+        self.demographics_dim = demographics_dim
+        
+        # Parse encoder type
+        if isinstance(encoder_type, str):
+            self.encoder_type = EncoderType(encoder_type.lower())
+        else:
+            self.encoder_type = encoder_type
         
         # Load configuration
         self.config = self._load_config(config, config_path)
@@ -213,18 +390,22 @@ class QuantumDDPGAgent:
         quantum_config = self.config.get('quantum', {})
         training_config = self.config.get('training', {})
         network_config = self.config.get('networks', {})
+        encoder_config = self.config.get('encoder', {})
         
         # Hyperparameters
         self.gamma = training_config.get('gamma', 0.99)
-        self.tau = training_config.get('tau', 0.005)
+        self.tau = training_config.get('tau', 0.005)  # Soft update rate
         self.batch_size = training_config.get('batch_size', 64)
         self.warmup_steps = training_config.get('warmup_steps', 1000)
         self.update_every = training_config.get('update_every', 1)
-        self.policy_delay = training_config.get('policy_delay', 2)
+        self.policy_delay = training_config.get('policy_delay', 2)  # TD3 delayed update
         self.max_grad_norm = training_config.get('max_grad_norm', 1.0)
         
         # Action scaling
         self.action_scale = quantum_config.get('action_scale', 200.0)
+        
+        # Build encoder if needed
+        self._build_encoder(encoder_config)
         
         # Build networks
         self._build_networks(quantum_config, network_config)
@@ -232,12 +413,24 @@ class QuantumDDPGAgent:
         # Build optimizers
         self._build_optimizers(training_config)
         
-        # Build replay buffer
+        # Build replay buffer (sequence-based for temporal encoders)
         buffer_size = training_config.get('buffer_size', 100000)
-        self.replay_buffer = ReplayBuffer(capacity=buffer_size, seed=seed)
+        if self.encoder_type != EncoderType.NONE:
+            self.replay_buffer = SequenceReplayBuffer(
+                capacity=buffer_size,
+                sequence_length=sequence_length,
+                seed=seed
+            )
+        else:
+            self.replay_buffer = ReplayBuffer(capacity=buffer_size, seed=seed)
         
         # Build exploration noise
         self._build_noise(training_config)
+        
+        # BIS Predictor (optional, per paper)  # (48)
+        self.bis_predictor = None
+        if self.config.get('use_bis_predictor', False):
+            self._build_bis_predictor(network_config)
         
         # Training state
         self.total_steps = 0
@@ -245,7 +438,8 @@ class QuantumDDPGAgent:
         self.training_stats = {
             'actor_loss': [],
             'critic_loss': [],
-            'q_values': []
+            'q_values': [],
+            'encoder_loss': []
         }
     
     def _load_config(
@@ -261,7 +455,7 @@ class QuantumDDPGAgent:
             with open(config_path, 'r') as f:
                 return yaml.safe_load(f)
         
-        # Default configuration
+        # Default configuration for CBIM paper implementation
         return {
             'quantum': {
                 'n_qubits': 2,
@@ -274,29 +468,162 @@ class QuantumDDPGAgent:
                 'critic': {'hidden_dims': [256, 256]},
                 'encoder': {'hidden_dims': [64, 32]}
             },
+            'encoder': {
+                'type': 'lstm',
+                'hidden_dim': 64,
+                'num_layers': 2,
+                'bidirectional': True,
+                'n_heads': 4,
+                'd_model': 64,
+                'dropout': 0.1
+            },
             'training': {
                 'gamma': 0.99,
                 'tau': 0.005,
                 'batch_size': 64,
                 'actor_lr': 0.0001,
                 'critic_lr': 0.001,
+                'encoder_lr': 0.001,
                 'buffer_size': 100000,
                 'warmup_steps': 1000,
                 'noise_type': 'ou',
                 'noise_sigma': 0.2,
                 'noise_theta': 0.15
-            }
+            },
+            'use_bis_predictor': False
         }
     
+    def _build_encoder(self, encoder_config: Dict):
+        """
+        Build temporal encoder (LSTM or Transformer) per CBIM Paper Fig.4.
+        
+        The encoder extracts temporal features from sequences of states
+        for input to the quantum policy network.
+        """
+        self.encoder = None
+        self.encoder_target = None
+        
+        if self.encoder_type == EncoderType.NONE:
+            self.encoded_dim = self.state_dim
+            return
+        
+        hidden_dim = encoder_config.get('hidden_dim', 64)
+        num_layers = encoder_config.get('num_layers', 2)
+        dropout = encoder_config.get('dropout', 0.1)
+        
+        if self.encoder_type == EncoderType.LSTM:
+            # LSTM Encoder per Fig.4
+            bidirectional = encoder_config.get('bidirectional', True)
+            self.encoder = LSTMEncoder(
+                input_dim=self.state_dim,
+                hidden_dim=hidden_dim,
+                num_layers=num_layers,
+                bidirectional=bidirectional,
+                dropout=dropout
+            )
+            self.encoded_dim = hidden_dim * 2 if bidirectional else hidden_dim
+            
+        elif self.encoder_type == EncoderType.TRANSFORMER:
+            # Transformer Encoder per Fig.4
+            n_heads = encoder_config.get('n_heads', 4)
+            d_model = encoder_config.get('d_model', 64)
+            self.encoder = TransformerEncoder(
+                input_dim=self.state_dim,
+                d_model=d_model,
+                n_heads=n_heads,
+                num_layers=num_layers,
+                dropout=dropout
+            )
+            self.encoded_dim = d_model
+            
+        elif self.encoder_type == EncoderType.HYBRID:
+            # Hybrid encoder combining LSTM/Transformer + demographics
+            self.encoder = HybridEncoder(
+                state_dim=self.state_dim,
+                demographics_dim=self.demographics_dim,
+                hidden_dim=hidden_dim,
+                num_layers=num_layers,
+                use_transformer=encoder_config.get('use_transformer', False),
+                dropout=dropout
+            )
+            self.encoded_dim = self.encoder.output_dim
+        
+        # Create target encoder for stable learning
+        if self.encoder is not None:
+            self.encoder_target = self._clone_encoder()
+            hard_update(self.encoder_target, self.encoder)
+            for param in self.encoder_target.parameters():
+                param.requires_grad = False
+    
+    def _clone_encoder(self):
+        """Create a copy of the encoder for target network."""
+        encoder_config = self.config.get('encoder', {})
+        hidden_dim = encoder_config.get('hidden_dim', 64)
+        num_layers = encoder_config.get('num_layers', 2)
+        dropout = encoder_config.get('dropout', 0.1)
+        
+        if self.encoder_type == EncoderType.LSTM:
+            bidirectional = encoder_config.get('bidirectional', True)
+            return LSTMEncoder(
+                input_dim=self.state_dim,
+                hidden_dim=hidden_dim,
+                num_layers=num_layers,
+                bidirectional=bidirectional,
+                dropout=dropout
+            )
+        elif self.encoder_type == EncoderType.TRANSFORMER:
+            n_heads = encoder_config.get('n_heads', 4)
+            d_model = encoder_config.get('d_model', 64)
+            return TransformerEncoder(
+                input_dim=self.state_dim,
+                d_model=d_model,
+                n_heads=n_heads,
+                num_layers=num_layers,
+                dropout=dropout
+            )
+        elif self.encoder_type == EncoderType.HYBRID:
+            return HybridEncoder(
+                state_dim=self.state_dim,
+                demographics_dim=self.demographics_dim,
+                hidden_dim=hidden_dim,
+                num_layers=num_layers,
+                use_transformer=encoder_config.get('use_transformer', False),
+                dropout=dropout
+            )
+        return None
+    
+    def _build_bis_predictor(self, network_config: Dict):
+        """
+        Build BIS predictor network per CBIM Paper (48).
+        
+        The BIS predictor estimates future BIS values for planning.
+        """
+        predictor_config = network_config.get('bis_predictor', {})
+        self.bis_predictor = BISPredictor(
+            state_dim=self.state_dim,
+            action_dim=self.action_dim,
+            hidden_dims=predictor_config.get('hidden_dims', [128, 64]),
+            prediction_horizon=predictor_config.get('prediction_horizon', 5)
+        )
+    
     def _build_networks(self, quantum_config: Dict, network_config: Dict):
-        """Build actor and critic networks."""
+        """
+        Build actor and critic networks per CBIM Paper Fig.3 & Fig.4.
+        
+        Architecture:
+        - Actor: VQC-based quantum policy with optional temporal encoder
+        - Critic: Twin Q-networks (TD3 style) for stable value estimation
+        """
         # Quantum Actor (Policy)
         n_qubits = quantum_config.get('n_qubits', 2)
         n_layers = quantum_config.get('n_layers', 4)
         encoder_config = network_config.get('encoder', {})
         
+        # Input dimension to quantum policy (after encoding)
+        policy_input_dim = self.encoded_dim
+        
         self.actor = QuantumPolicy(
-            state_dim=self.state_dim,
+            state_dim=policy_input_dim,
             n_qubits=n_qubits,
             n_layers=n_layers,
             encoder_hidden=encoder_config.get('hidden_dims', [64, 32]),
@@ -307,7 +634,7 @@ class QuantumDDPGAgent:
         
         # Target Actor (copy of actor)
         self.actor_target = QuantumPolicy(
-            state_dim=self.state_dim,
+            state_dim=policy_input_dim,
             n_qubits=n_qubits,
             n_layers=n_layers,
             encoder_hidden=encoder_config.get('hidden_dims', [64, 32]),
@@ -321,17 +648,17 @@ class QuantumDDPGAgent:
         for param in self.actor_target.parameters():
             param.requires_grad = False
         
-        # Twin Critic Networks
+        # Twin Critic Networks (TD3 style for reduced variance)
         critic_config = network_config.get('critic', {})
         self.critic = TwinCriticNetwork(
-            state_dim=self.state_dim,
+            state_dim=policy_input_dim,  # Use encoded state
             action_dim=self.action_dim,
             hidden_dims=critic_config.get('hidden_dims', [256, 256])
         )
         
         # Target Critic
         self.critic_target = TwinCriticNetwork(
-            state_dim=self.state_dim,
+            state_dim=policy_input_dim,
             action_dim=self.action_dim,
             hidden_dims=critic_config.get('hidden_dims', [256, 256])
         )
@@ -342,9 +669,10 @@ class QuantumDDPGAgent:
             param.requires_grad = False
     
     def _build_optimizers(self, training_config: Dict):
-        """Build optimizers for actor and critic."""
+        """Build optimizers for actor, critic, and encoder."""
         actor_lr = training_config.get('actor_lr', 0.0001)
         critic_lr = training_config.get('critic_lr', 0.001)
+        encoder_lr = training_config.get('encoder_lr', 0.001)
         
         self.actor_optimizer = optim.Adam(
             self.actor.parameters(),
@@ -355,6 +683,14 @@ class QuantumDDPGAgent:
             self.critic.parameters(),
             lr=critic_lr
         )
+        
+        # Encoder optimizer if using temporal encoder
+        self.encoder_optimizer = None
+        if self.encoder is not None:
+            self.encoder_optimizer = optim.Adam(
+                self.encoder.parameters(),
+                lr=encoder_lr
+            )
     
     def _build_noise(self, training_config: Dict):
         """Build exploration noise generator."""
@@ -381,26 +717,48 @@ class QuantumDDPGAgent:
         self,
         state: np.ndarray,
         deterministic: bool = False,
-        add_noise: bool = True
+        add_noise: bool = True,
+        state_sequence: Optional[np.ndarray] = None,
+        demographics: Optional[np.ndarray] = None
     ) -> np.ndarray:
         """
         Select action given state.
         
+        For temporal encoders (LSTM/Transformer), either provide state_sequence
+        directly or maintain internal sequence buffer.
+        
         Args:
-            state: Current state
+            state: Current state s_t  # (36)
             deterministic: If True, return action without noise
             add_noise: Whether to add exploration noise
+            state_sequence: Sequence of states [seq_len, state_dim] for temporal encoding
+            demographics: Patient demographics [age, height, weight, gender] for hybrid encoder
         
         Returns:
-            Action array (scaled to [0, action_scale])
+            Action array (scaled to [0, action_scale]) - propofol dose
         """
         with torch.no_grad():
-            state_tensor = torch.FloatTensor(state)
-            if state_tensor.dim() == 1:
-                state_tensor = state_tensor.unsqueeze(0)
+            # Encode state if using temporal encoder
+            if self.encoder is not None and state_sequence is not None:
+                state_seq_tensor = torch.FloatTensor(state_sequence)
+                if state_seq_tensor.dim() == 2:
+                    state_seq_tensor = state_seq_tensor.unsqueeze(0)  # Add batch dim
+                
+                if self.encoder_type == EncoderType.HYBRID and demographics is not None:
+                    demo_tensor = torch.FloatTensor(demographics)
+                    if demo_tensor.dim() == 1:
+                        demo_tensor = demo_tensor.unsqueeze(0)
+                    encoded_state = self.encoder(state_seq_tensor, demo_tensor)
+                else:
+                    encoded_state = self.encoder(state_seq_tensor)
+            else:
+                # Use state directly
+                encoded_state = torch.FloatTensor(state)
+                if encoded_state.dim() == 1:
+                    encoded_state = encoded_state.unsqueeze(0)
             
             # Get action from quantum policy (in [0, 1])
-            action = self.actor(state_tensor).squeeze(0).numpy()
+            action = self.actor(encoded_state).squeeze(0).numpy()
         
         # Add exploration noise
         if add_noise and not deterministic:
@@ -408,7 +766,7 @@ class QuantumDDPGAgent:
             action = action + noise
             action = np.clip(action, 0, 1)
         
-        # Scale to actual action range
+        # Scale to actual action range (propofol dose)
         action_scaled = action * self.action_scale
         
         return action_scaled
@@ -425,10 +783,10 @@ class QuantumDDPGAgent:
         Store transition in replay buffer.
         
         Args:
-            state: Current state
-            action: Action taken (scaled)
-            reward: Reward received
-            next_state: Next state
+            state: Current state s_t  # (36)
+            action: Action taken a_t (scaled propofol dose)
+            reward: Reward received R_t  # (40): R = 1/(|g - BIS| + α)
+            next_state: Next state s_{t+1}
             done: Whether episode terminated
         """
         # Normalize action back to [0, 1] for storage
@@ -446,7 +804,13 @@ class QuantumDDPGAgent:
     
     def update(self) -> Dict[str, float]:
         """
-        Perform one update step.
+        Perform one DDPG update step.
+        
+        DDPG Update Steps:
+        1. Sample batch from replay buffer
+        2. Update critic (Q-network) using TD target
+        3. Update actor (policy) using policy gradient
+        4. Soft update target networks: θ' ← τθ + (1-τ)θ'
         
         Returns:
             Dictionary of training metrics
@@ -455,27 +819,40 @@ class QuantumDDPGAgent:
             return {}
         
         # Sample batch
-        batch = self.replay_buffer.sample(self.batch_size)
-        states, actions, rewards, next_states, dones = batch
-        states = states.float().to(self.device)
-        actions = actions.float().to(self.device)
-        rewards = rewards.float().to(self.device)
-        next_states = next_states.float().to(self.device)
-        dones = dones.float().to(self.device)
+        if self.encoder_type != EncoderType.NONE:
+            states, actions, rewards, next_states, dones = \
+                self.replay_buffer.sample(self.batch_size)
+            # states shape: [batch, seq_len, state_dim]
+        else:
+            states, actions, rewards, next_states, dones = \
+                self.replay_buffer.sample(self.batch_size)
+        
+        # Encode states if using temporal encoder
+        if self.encoder is not None:
+            encoded_states = self.encoder(states)
+            with torch.no_grad():
+                encoded_next_states = self.encoder_target(next_states)
+        else:
+            encoded_states = states
+            encoded_next_states = next_states
         
         # Update critic
         critic_loss, q_values = self._update_critic(
-            states, actions, rewards, next_states, dones
+            encoded_states, actions, rewards, encoded_next_states, dones
         )
         
         # Update actor (with policy delay for TD3-style)
         actor_loss = None
         if self.update_count % self.policy_delay == 0:
-            actor_loss = self._update_actor(states)
+            actor_loss = self._update_actor(encoded_states)
             
-            # Soft update target networks
+            # Soft update target networks: θ' ← τθ + (1-τ)θ'
             soft_update(self.actor_target, self.actor, self.tau)
             soft_update(self.critic_target, self.critic, self.tau)
+            
+            # Update encoder target if applicable
+            if self.encoder is not None:
+                soft_update(self.encoder_target, self.encoder, self.tau)
         
         self.update_count += 1
         
@@ -499,33 +876,31 @@ class QuantumDDPGAgent:
         dones: torch.Tensor
     ) -> Tuple[float, torch.Tensor]:
         """
-        Update critic networks.
+        Update critic networks using TD learning.
+        
+        Twin Q-Learning (TD3):
+        - Use minimum of two Q-values for target to reduce overestimation
+        - Target: y = r + γ * (1 - done) * min(Q1', Q2')(s', π'(s'))
+        - Loss: L = MSE(Q1(s,a), y) + MSE(Q2(s,a), y)
         
         Args:
-            states: Batch of states
+            states: Batch of (encoded) states
             actions: Batch of actions
-            rewards: Batch of rewards
-            next_states: Batch of next states
+            rewards: Batch of rewards R_t  # (40)
+            next_states: Batch of (encoded) next states
             dones: Batch of done flags
         
         Returns:
             Tuple of (critic_loss, q_values)
         """
         with torch.no_grad():
-            # 텐서 dtype을 float32로 통일
-            next_states = next_states.float()
-            
-            # next_actions 생성 (actor_target 사용)
+            # Get next actions from target policy
             next_actions = self.actor_target(next_states)
-            next_actions = next_actions.float()
             
             # Compute target Q-values (using minimum of twin critics)
+            # This is the TD3 technique to reduce overestimation
             target_q = self.critic_target.q_min(next_states, next_actions)
             target_q = rewards + (1 - dones) * self.gamma * target_q
-        
-        # states와 actions도 float32로 변환
-        states = states.float()
-        actions = actions.float()
         
         # Current Q-values
         q1, q2 = self.critic(states, actions)
@@ -535,6 +910,11 @@ class QuantumDDPGAgent:
         
         # Optimize critic
         self.critic_optimizer.zero_grad()
+        
+        # Also update encoder if applicable
+        if self.encoder_optimizer is not None:
+            self.encoder_optimizer.zero_grad()
+        
         critic_loss.backward()
         
         # Gradient clipping
@@ -543,28 +923,38 @@ class QuantumDDPGAgent:
                 self.critic.parameters(), 
                 self.max_grad_norm
             )
+            if self.encoder is not None:
+                nn.utils.clip_grad_norm_(
+                    self.encoder.parameters(),
+                    self.max_grad_norm
+                )
         
         self.critic_optimizer.step()
+        if self.encoder_optimizer is not None:
+            self.encoder_optimizer.step()
         
         return critic_loss.item(), q1
     
     def _update_actor(self, states: torch.Tensor) -> float:
         """
-        Update actor (quantum policy).
+        Update actor (quantum policy) using deterministic policy gradient.
+        
+        Policy Gradient (DPG):
+        - Maximize Q-value w.r.t. policy parameters
+        - Loss: L = -E[Q(s, π(s))]
+        - Gradient: ∇_θ J ≈ E[∇_a Q(s,a)|_{a=π(s)} ∇_θ π(s)]
         
         Args:
-            states: Batch of states
+            states: Batch of (encoded) states
         
         Returns:
             Actor loss value
         """
         # Compute actions from current policy
-        states = states.float()
-        
         actions = self.actor(states)
-        actions = actions.float()
         
         # Actor loss: maximize Q-value (minimize negative Q)
+        # Uses only Q1 for actor update (TD3)
         actor_loss = -self.critic.q1(states, actions).mean()
         
         # Optimize actor
@@ -639,8 +1029,21 @@ class QuantumDDPGAgent:
             'critic_optimizer_state_dict': self.critic_optimizer.state_dict(),
             'total_steps': self.total_steps,
             'update_count': self.update_count,
-            'config': self.config
+            'config': self.config,
+            'encoder_type': self.encoder_type.value,
+            'state_dim': self.state_dim,
+            'action_dim': self.action_dim
         }
+        
+        # Save encoder if applicable
+        if self.encoder is not None:
+            checkpoint['encoder_state_dict'] = self.encoder.state_dict()
+            checkpoint['encoder_target_state_dict'] = self.encoder_target.state_dict()
+            checkpoint['encoder_optimizer_state_dict'] = self.encoder_optimizer.state_dict()
+        
+        # Save BIS predictor if applicable
+        if self.bis_predictor is not None:
+            checkpoint['bis_predictor_state_dict'] = self.bis_predictor.state_dict()
         
         torch.save(checkpoint, path)
     
@@ -661,59 +1064,128 @@ class QuantumDDPGAgent:
         self.critic_optimizer.load_state_dict(checkpoint['critic_optimizer_state_dict'])
         self.total_steps = checkpoint['total_steps']
         self.update_count = checkpoint['update_count']
+        
+        # Load encoder if applicable
+        if self.encoder is not None and 'encoder_state_dict' in checkpoint:
+            self.encoder.load_state_dict(checkpoint['encoder_state_dict'])
+            self.encoder_target.load_state_dict(checkpoint['encoder_target_state_dict'])
+            self.encoder_optimizer.load_state_dict(checkpoint['encoder_optimizer_state_dict'])
+        
+        # Load BIS predictor if applicable
+        if self.bis_predictor is not None and 'bis_predictor_state_dict' in checkpoint:
+            self.bis_predictor.load_state_dict(checkpoint['bis_predictor_state_dict'])
     
     def get_quantum_info(self) -> Dict:
         """Get information about the quantum circuit."""
         return self.actor.get_quantum_circuit_info()
     
+    def get_encoder_info(self) -> Dict:
+        """Get information about the temporal encoder."""
+        info = {
+            'encoder_type': self.encoder_type.value,
+            'encoded_dim': self.encoded_dim
+        }
+        
+        if self.encoder is not None:
+            info['num_parameters'] = sum(
+                p.numel() for p in self.encoder.parameters()
+            )
+        
+        return info
+    
     def set_eval_mode(self):
         """Set networks to evaluation mode."""
         self.actor.eval()
         self.critic.eval()
+        if self.encoder is not None:
+            self.encoder.eval()
     
     def set_train_mode(self):
         """Set networks to training mode."""
         self.actor.train()
         self.critic.train()
+        if self.encoder is not None:
+            self.encoder.train()
 
 
 if __name__ == "__main__":
-    # Test the agent
+    # Test the Quantum DDPG agent with different encoder types
     print("Testing QuantumDDPGAgent...")
+    print("=" * 60)
     
-    # Create agent
-    agent = QuantumDDPGAgent(
-        state_dim=4,
+    # Test 1: No encoder (basic)
+    print("\n[Test 1] Basic agent without encoder:")
+    agent_basic = QuantumDDPGAgent(
+        state_dim=8,  # Extended state per (36)-(39)
         action_dim=1,
-        seed=42
+        seed=42,
+        encoder_type='none'
     )
     
-    print(f"Agent created")
-    print(f"Quantum circuit info: {agent.get_quantum_info()}")
+    print(f"  Quantum circuit info: {agent_basic.get_quantum_info()}")
+    print(f"  Encoder info: {agent_basic.get_encoder_info()}")
     
     # Test action selection
-    state = np.random.randn(4)
-    action = agent.select_action(state)
-    print(f"\nState: {state}")
-    print(f"Action: {action}")
+    state = np.random.randn(8)
+    action = agent_basic.select_action(state)
+    print(f"  State shape: {state.shape}")
+    print(f"  Action: {action}")
     
-    # Test training loop (dummy data)
-    print("\nTesting training loop...")
+    # Test 2: LSTM encoder
+    print("\n[Test 2] Agent with LSTM encoder:")
+    agent_lstm = QuantumDDPGAgent(
+        state_dim=8,
+        action_dim=1,
+        seed=42,
+        encoder_type='lstm',
+        sequence_length=10
+    )
+    
+    print(f"  Quantum circuit info: {agent_lstm.get_quantum_info()}")
+    print(f"  Encoder info: {agent_lstm.get_encoder_info()}")
+    
+    # Test action selection with sequence
+    state_seq = np.random.randn(10, 8)  # [seq_len, state_dim]
+    action = agent_lstm.select_action(state_seq[-1], state_sequence=state_seq)
+    print(f"  State sequence shape: {state_seq.shape}")
+    print(f"  Action: {action}")
+    
+    # Test 3: Transformer encoder
+    print("\n[Test 3] Agent with Transformer encoder:")
+    agent_transformer = QuantumDDPGAgent(
+        state_dim=8,
+        action_dim=1,
+        seed=42,
+        encoder_type='transformer',
+        sequence_length=10
+    )
+    
+    print(f"  Quantum circuit info: {agent_transformer.get_quantum_info()}")
+    print(f"  Encoder info: {agent_transformer.get_encoder_info()}")
+    
+    action = agent_transformer.select_action(state_seq[-1], state_sequence=state_seq)
+    print(f"  Action: {action}")
+    
+    # Test 4: Training loop (basic agent)
+    print("\n[Test 4] Testing training loop (basic agent)...")
     for step in range(100):
-        state = np.random.randn(4)
-        action = agent.select_action(state)
-        next_state = np.random.randn(4)
-        reward = -np.random.rand()
+        state = np.random.randn(8)
+        action = agent_basic.select_action(state)
+        next_state = np.random.randn(8)
+        reward = -np.random.rand()  # Simulated reward
         done = step == 99
         
-        metrics = agent.train_step(state, action, reward, next_state, done)
+        metrics = agent_basic.train_step(state, action, reward, next_state, done)
         
         if step % 20 == 0 and metrics:
-            print(f"Step {step}: {metrics}")
+            print(f"  Step {step}: {metrics}")
     
-    # Test save/load
-    agent.save("/tmp/test_agent.pt")
-    agent.load("/tmp/test_agent.pt")
-    print("\nSave/Load test passed!")
+    # Test 5: Save/Load
+    print("\n[Test 5] Testing save/load...")
+    agent_basic.save("/tmp/test_ddpg_agent.pt")
+    agent_basic.load("/tmp/test_ddpg_agent.pt")
+    print("  Save/Load test passed!")
     
-    print("\nTest complete!")
+    print("\n" + "=" * 60)
+    print("All tests complete!")
+    print("=" * 60)

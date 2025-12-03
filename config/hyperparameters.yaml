@@ -1,12 +1,13 @@
 # Quantum RL Propofol Infusion Control - Hyperparameters
 # Based on CBIM (Closed-loop BIS-guided Infusion Model) paper
+# Implements formulations (1)-(52) from the paper
 
 # =============================================================================
 # Environment Configuration
 # =============================================================================
 environment:
   # BIS Target and Safety Bounds
-  bis_target: 50              # Target BIS value for moderate hypnosis
+  bis_target: 50              # Target BIS value g for moderate hypnosis (40)
   bis_min: 40                 # Minimum safe BIS (below = too deep)
   bis_max: 60                 # Maximum safe BIS (above = patient awakening)
   bis_baseline: 97            # Baseline BIS when awake (E0)
@@ -22,12 +23,35 @@ environment:
   # Initial Bolus (optional, for induction)
   enable_bolus: true
   bolus_dose: 2.0             # mg/kg bolus for induction
+  
+  # Extended State Configuration per (36)-(39)
+  use_extended_state: true    # 8-dimensional state space
+  
+  # Reward Function Selection
+  use_original_reward: true   # R = 1/(|g - BIS| + α) per (40)
+  reward_alpha: 0.1           # α parameter in reward function (40)
+  
+  # Remifentanil External Input Configuration
+  remifentanil:
+    enabled: true             # Enable remifentanil as external input
+    profile_type: "random"    # "constant", "random", "surgical"
+    min_rate: 0.0             # μg/kg/min
+    max_rate: 0.5             # μg/kg/min
+    mean_rate: 0.2            # μg/kg/min (for random profile)
+    std_rate: 0.1             # Standard deviation for random
 
 # =============================================================================
-# Schnider PK/PD Model Parameters (Population Defaults)
+# Schnider PK/PD Model Parameters (Propofol)
+# Formulations (4)-(17)
 # =============================================================================
 pkpd_model:
   model_type: "schnider"      # Use Schnider model
+  
+  # State-Space Representation ẋ = Ax + Bu per (1)-(3)
+  use_state_space: true
+  
+  # BIS Model Selection per (32)
+  bis_model: "drug_interaction"  # "hill_sigmoid" or "drug_interaction"
   
   # Default Patient Demographics (can be overridden)
   default_patient:
@@ -36,25 +60,33 @@ pkpd_model:
     height: 170               # cm
     gender: "male"            # male or female
   
-  # Schnider Model Fixed Parameters
+  # Schnider Model Parameters per (4)-(17)
   schnider:
-    # Rate constants (min^-1)
-    k10: 0.443                # Elimination rate constant
-    k12: 0.302                # Central to shallow peripheral
-    k13: 0.196                # Central to deep peripheral
-    k21: 0.092                # Shallow peripheral to central
-    k31: 0.0048               # Deep peripheral to central
-    ke0: 0.456                # Effect-site equilibration
+    # Rate constants (min^-1) - computed from patient demographics
+    # k10, k12, k13, k21, k31 are patient-specific per (11)-(15)
+    ke0: 0.456                # Effect-site equilibration (16)
     
-    # Volume of central compartment (L)
-    v1: 4.27
+    # Volume of central compartment (L) per (4)-(5)
+    # v1 is patient-specific
     
-  # Hill/Sigmoid Emax Model Parameters
+  # Minto Model Parameters (Remifentanil) per (18)-(29)
+  minto:
+    ke0: 0.595                # Effect-site equilibration (29)
+    
+  # Hill/Sigmoid Emax Model Parameters (30)-(31)
   hill_model:
-    e0: 97.0                  # Baseline effect (awake BIS)
-    emax: 97.0                # Maximum effect
-    ec50: 3.4                 # Effect-site concentration at 50% effect (μg/ml)
+    e0: 97.0                  # Baseline effect (awake BIS) (30)
+    emax: 97.0                # Maximum effect (30)
+    ec50_ppf: 3.4             # Propofol EC50 (μg/ml)
+    ec50_rftn: 19.3           # Remifentanil EC50 (ng/ml) (32)
     gamma: 3.0                # Hill coefficient (steepness)
+    
+  # Drug Interaction Model (32)
+  drug_interaction:
+    alpha_ppf: 4.47           # Propofol factor in interaction (32)
+    alpha_rftn: 19.3          # Remifentanil factor in interaction (32)
+    baseline: 98.0            # BIS baseline (32)
+    gamma: 1.43               # Interaction exponent (32)
 
 # =============================================================================
 # Quantum Circuit Configuration
@@ -71,51 +103,129 @@ quantum:
   shots: null                 # null for analytic simulation
   
   # Feature Selection for 2-qubit encoding
-  # Indices of state features to encode (0: BIS_error, 1: Ce_normalized)
+  # Indices of state features to encode (from encoded representation)
   feature_indices: [0, 1]
   
   # Action mapping
   action_scale: 200.0         # Max propofol dose for action scaling
 
 # =============================================================================
+# Temporal Encoder Configuration (Fig.4)
+# =============================================================================
+encoder:
+  # Encoder type: "none", "lstm", "transformer", "hybrid"
+  type: "lstm"
+  
+  # Sequence length for temporal encoding
+  sequence_length: 10         # T time steps for history
+  
+  # LSTM Configuration
+  lstm:
+    hidden_dim: 64
+    num_layers: 2
+    bidirectional: true
+    dropout: 0.1
+    
+  # Transformer Configuration  
+  transformer:
+    d_model: 64
+    n_heads: 4
+    num_layers: 2
+    dropout: 0.1
+    
+  # Hybrid Encoder (LSTM/Transformer + Demographics)
+  hybrid:
+    use_transformer: false    # Use LSTM if false
+    demographics_dim: 4       # [age, height, weight, gender]
+    demographics_hidden: 32
+
+# =============================================================================
 # Classical Network Configuration
 # =============================================================================
 networks:
-  # Value Network (Critic)
+  # Value Network (Critic) - Twin Q-Networks for TD3/DDPG
   critic:
     hidden_dims: [256, 256]
     activation: "relu"
     
-  # State Encoder (for hybrid approach)
+  # State Encoder for quantum policy
   encoder:
     hidden_dims: [64, 32]
     activation: "relu"
     output_dim: 2             # Must match n_qubits for angle encoding
+    
+  # BIS Predictor Network per (48)
+  bis_predictor:
+    enabled: false
+    hidden_dims: [128, 64]
+    prediction_horizon: 5     # τ steps ahead
 
 # =============================================================================
-# Training Configuration (DDPG-style)
+# Algorithm Selection
+# =============================================================================
+algorithm:
+  # Algorithm type: "ddpg", "ppo"
+  type: "ddpg"
+  
+  # Common parameters
+  gamma: 0.99                 # Discount factor γ
+  
+  # DDPG/TD3 specific (formulations follow TD3 paper)
+  ddpg:
+    tau: 0.005                # Soft update coefficient
+    policy_delay: 2           # TD3: delay policy updates
+    
+  # PPO specific per formulations (41)-(49)
+  ppo:
+    # GAE parameters (46)
+    gae_lambda: 0.95          # λ for GAE
+    
+    # PPO clipped objective (42)
+    clip_epsilon: 0.2         # ε for clipping
+    
+    # Value function coefficient (43)
+    value_coef: 0.5           # c₁ coefficient
+    
+    # Entropy bonus (45)
+    entropy_coef: 0.01        # c₂ coefficient
+    
+    # Training parameters
+    n_epochs: 10              # K epochs per update
+    n_steps: 2048             # Steps per rollout
+    minibatch_size: 64
+    
+    # Value clipping
+    clip_value: true
+    max_grad_norm: 0.5
+    
+    # Adaptive learning
+    target_kl: 0.01           # Early stopping if KL > target
+
+# =============================================================================
+# Training Configuration
 # =============================================================================
 training:
   # General
-  algorithm: "ddpg"           # ddpg, td3, or sac
   total_episodes: 1000
   max_steps_per_episode: 720  # 3600s / 5s = 720 steps
   
   # Learning Rates
   actor_lr: 0.0001            # Learning rate for quantum policy
   critic_lr: 0.001            # Learning rate for critic
-  encoder_lr: 0.0001          # Learning rate for state encoder
+  encoder_lr: 0.001           # Learning rate for encoder
   
-  # DDPG Specific
-  gamma: 0.99                 # Discount factor
+  # Discount factor
+  gamma: 0.99
+  
+  # DDPG specific
   tau: 0.005                  # Soft update coefficient
   
-  # Replay Buffer
+  # Replay Buffer (for DDPG)
   buffer_size: 100000
   batch_size: 64
   warmup_steps: 1000          # Random actions before training
   
-  # Exploration
+  # Exploration (for DDPG)
   noise_type: "ou"            # "ou" (Ornstein-Uhlenbeck) or "gaussian"
   noise_sigma: 0.2            # Noise standard deviation
   noise_theta: 0.15           # OU noise theta
@@ -130,9 +240,14 @@ training:
   max_grad_norm: 1.0
 
 # =============================================================================
-# Reward Configuration
+# Reward Configuration per (40)
 # =============================================================================
 reward:
+  # Original reward function: R = 1/(|g - BIS| + α) per (40)
+  use_original: true
+  alpha: 0.1                  # α parameter to prevent division by zero
+  
+  # Alternative reward (if use_original = false)
   # Weights for reward components
   weights:
     bis_error: 1.0            # Weight for BIS error penalty
@@ -150,13 +265,13 @@ reward:
     critical_penalty: -20.0   # Very large penalty for dangerous depth
 
 # =============================================================================
-# Evaluation Metrics (following CBIM paper)
+# Evaluation Metrics (CBIM paper formulations 50-52)
 # =============================================================================
 metrics:
-  # Performance Error (PE) based metrics
-  calculate_mdpe: true        # Median Performance Error
-  calculate_mdape: true       # Median Absolute Performance Error
-  calculate_wobble: true      # Measure of intra-individual variability
+  # Performance Error (PE) based metrics per (50)-(52)
+  calculate_mdpe: true        # Median Performance Error (50)
+  calculate_mdape: true       # Median Absolute Performance Error (51)
+  calculate_wobble: true      # Measure of intra-individual variability (52)
   calculate_divergence: true  # Measure of trend in PE
   
   # Target Window

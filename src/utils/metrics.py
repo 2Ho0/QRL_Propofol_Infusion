@@ -5,33 +5,30 @@ Performance Metrics for Propofol Infusion Control
 This module implements the standard clinical performance metrics
 for evaluating anesthesia control systems, following the CBIM paper.
 
-Metrics:
---------
-1. MDPE (Median Performance Error): Measure of bias
-   - Positive: BIS tends to be higher than target
-   - Negative: BIS tends to be lower than target
+CBIM Paper Formulations (50)-(52):
+-----------------------------------
 
-2. MDAPE (Median Absolute Performance Error): Measure of accuracy
-   - Lower is better
-   - Clinical acceptability: MDAPE < 20%
-
-3. Wobble: Measure of intra-individual variability
-   - Lower indicates more stable control
-   - Computed as median absolute deviation from MDPE
-
-4. Divergence: Measure of trend in PE over time
-   - Indicates whether control is improving or worsening
-
-5. Time in Target Range: Percentage of time BIS is in target window
-
-Mathematical Definitions:
--------------------------
-Performance Error (PE):
+Performance Error (PE) - Base metric:
     PE_t = (BIS_t - BIS_target) / BIS_target × 100 [%]
 
-MDPE = Median(PE)
-MDAPE = Median(|PE|)
-Wobble = Median(|PE - MDPE|)
+(50) MDPE (Median Performance Error): Measure of bias
+    MDPE = Median(PE)
+    - Positive: BIS tends to be higher than target (underdosing)
+    - Negative: BIS tends to be lower than target (overdosing)
+
+(51) MDAPE (Median Absolute Performance Error): Measure of accuracy
+    MDAPE = Median(|PE|)
+    - Lower is better
+    - Clinical acceptability: MDAPE < 20%
+
+(52) Wobble: Measure of intra-individual variability
+    Wobble = Median(|PE - MDPE|)
+    - Lower indicates more stable control
+    - Computed as median absolute deviation from MDPE
+
+Additional Metrics:
+- Divergence: Measure of trend in PE over time
+- Time in Target Range: Percentage of time BIS is in target window
 """
 
 import numpy as np
@@ -44,10 +41,12 @@ class PerformanceMetrics:
     """
     Container for anesthesia control performance metrics.
     
+    Following CBIM paper formulations (50)-(52).
+    
     Attributes:
-        mdpe: Median Performance Error (%)
-        mdape: Median Absolute Performance Error (%)
-        wobble: Intra-individual variability (%)
+        mdpe: Median Performance Error (%) - Formulation (50)
+        mdape: Median Absolute Performance Error (%) - Formulation (51)
+        wobble: Intra-individual variability (%) - Formulation (52)
         divergence: Trend in PE (%.min^-1)
         time_in_target: Percentage of time in target range (%)
         mean_dose: Mean propofol infusion rate (μg/kg/min)
@@ -71,11 +70,12 @@ def calculate_performance_error(
     """
     Calculate Performance Error (PE) for each time point.
     
-    PE = (BIS_measured - BIS_target) / BIS_target × 100
+    Base formula for metrics (50)-(52):
+        PE_t = (BIS_t - BIS_target) / BIS_target × 100
     
     Args:
         bis_values: Array of BIS measurements
-        bis_target: Target BIS value
+        bis_target: Target BIS value (g in paper)
     
     Returns:
         Array of PE values in percentage
@@ -88,7 +88,9 @@ def calculate_mdpe(
     bis_target: float = 50.0
 ) -> float:
     """
-    Calculate Median Performance Error (MDPE).
+    Calculate Median Performance Error (MDPE) - Formulation (50).
+    
+    MDPE = Median(PE)
     
     MDPE measures the bias of the control system.
     - Positive MDPE: System tends to underdose (BIS > target)
@@ -96,12 +98,14 @@ def calculate_mdpe(
     
     Args:
         bis_values: Array of BIS measurements
-        bis_target: Target BIS value
+        bis_target: Target BIS value (g in paper)
     
     Returns:
         MDPE in percentage
     """
+    # PE_t = (BIS_t - g) / g × 100  (base formula)
     pe = calculate_performance_error(bis_values, bis_target)
+    # MDPE = Median(PE)  (50)
     return float(np.median(pe))
 
 
@@ -110,7 +114,9 @@ def calculate_mdape(
     bis_target: float = 50.0
 ) -> float:
     """
-    Calculate Median Absolute Performance Error (MDAPE).
+    Calculate Median Absolute Performance Error (MDAPE) - Formulation (51).
+    
+    MDAPE = Median(|PE|)
     
     MDAPE measures the accuracy/precision of the control system.
     Lower values indicate better control.
@@ -118,12 +124,14 @@ def calculate_mdape(
     
     Args:
         bis_values: Array of BIS measurements
-        bis_target: Target BIS value
+        bis_target: Target BIS value (g in paper)
     
     Returns:
         MDAPE in percentage
     """
+    # PE_t = (BIS_t - g) / g × 100  (base formula)
     pe = calculate_performance_error(bis_values, bis_target)
+    # MDAPE = Median(|PE|)  (51)
     return float(np.median(np.abs(pe)))
 
 
@@ -132,7 +140,9 @@ def calculate_wobble(
     bis_target: float = 50.0
 ) -> float:
     """
-    Calculate Wobble (intra-individual variability).
+    Calculate Wobble (intra-individual variability) - Formulation (52).
+    
+    Wobble = Median(|PE - MDPE|)
     
     Wobble measures the variability of control around the median.
     It's the median absolute deviation of PE from MDPE.
@@ -140,13 +150,16 @@ def calculate_wobble(
     
     Args:
         bis_values: Array of BIS measurements
-        bis_target: Target BIS value
+        bis_target: Target BIS value (g in paper)
     
     Returns:
         Wobble in percentage
     """
+    # PE_t = (BIS_t - g) / g × 100  (base formula)
     pe = calculate_performance_error(bis_values, bis_target)
+    # MDPE = Median(PE)  (50)
     mdpe = np.median(pe)
+    # Wobble = Median(|PE - MDPE|)  (52)
     return float(np.median(np.abs(pe - mdpe)))
 
 

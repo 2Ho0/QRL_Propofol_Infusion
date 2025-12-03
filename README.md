@@ -4,23 +4,36 @@ A hybrid Quantum-Classical Reinforcement Learning system for closed-loop BIS-gui
 
 ## 🎯 Overview
 
-This project implements a **Quantum Deep Deterministic Policy Gradient (QDDPG)** agent for automated propofol infusion control during anesthesia. The system uses a 2-qubit Variational Quantum Circuit (VQC) as the policy network to determine optimal propofol dosing to maintain the patient's BIS (Bispectral Index) at the target level.
+This project implements **Quantum Deep Deterministic Policy Gradient (QDDPG)** and **Quantum Proximal Policy Optimization (QPPO)** agents for automated propofol infusion control during anesthesia. The system uses a 2-qubit Variational Quantum Circuit (VQC) as the policy network to determine optimal propofol dosing to maintain the patient's BIS (Bispectral Index) at the target level.
 
 ### Key Features
 
+- **Dual Algorithm Support**: Both DDPG and PPO with VQC-based policy (Formulations 41-49)
 - **Quantum Policy Network**: 2-qubit VQC with angle encoding and variational layers
-- **Schnider PK/PD Model**: Three-compartment pharmacokinetic model with effect-site dynamics
-- **Hill Sigmoid BIS Model**: Pharmacodynamic model for BIS prediction
-- **Clinical Metrics**: MDPE, MDAPE, Wobble, Time-in-Target evaluation
-- **Gymnasium Environment**: Standard RL interface for training and evaluation
+- **Temporal Encoders**: LSTM and Transformer for sequential state processing (Fig.4)
+- **Dual Drug Support**: Propofol + Remifentanil interaction model
+- **Schnider PK/PD Model**: Three-compartment pharmacokinetic model with state-space form (Formulations 1-17)
+- **Minto Model**: Remifentanil pharmacokinetics (Formulations 18-29)
+- **Drug Interaction BIS Model**: Combined propofol-remifentanil effect (Formulation 32)
+- **Clinical Metrics**: MDPE, MDAPE, Wobble evaluation (Formulations 50-52)
+- **Gymnasium Environment**: Standard RL interface with extended 8-dimensional state
 
 ## 📊 Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Quantum RL Agent (QDDPG)                     │
+│              Quantum RL Agent (QDDPG / QPPO)                    │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │         Temporal Encoder (Optional) - Fig.4              │   │
+│  │  ┌─────────────┐  or  ┌─────────────────────────────┐    │   │
+│  │  │    LSTM     │      │      Transformer            │    │   │
+│  │  │ Bidirectional│      │  Multi-Head Attention      │    │   │
+│  │  └─────────────┘      └─────────────────────────────┘    │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                              │                                  │
+│                              ▼                                  │
 │  ┌──────────────┐     ┌─────────────────────────────────┐       │
 │  │   State      │     │     Quantum Policy (Actor)      │       │
 │  │   Encoder    │──▶ │  ┌───────────────────────────┐   │       │
@@ -34,7 +47,7 @@ This project implements a **Quantum Deep Deterministic Policy Gradient (QDDPG)**
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────┐    │
 │  │              Twin Critic Networks (Classical)           │    │
-│  │   Q1(s,a) & Q2(s,a) → Value Estimation                  │    │
+│  │   Q1(s,a) & Q2(s,a) → Value Estimation (TD3 style)      │    │
 │  └─────────────────────────────────────────────────────────┘    │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
@@ -43,23 +56,24 @@ This project implements a **Quantum Deep Deterministic Policy Gradient (QDDPG)**
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Propofol Environment                         │
 ├─────────────────────────────────────────────────────────────────┤
+│  State (8-dim): [BIS_err, Ce_PPF, dBIS/dt, u_{t-1},             │
+│                  PPF_acc, RFTN_acc, BIS_slope, RFTN_t]          │
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────┐    │
-│  │              Schnider PK/PD Patient Model               │    │
-│  │   ┌─────────┐  ┌─────────┐  ┌─────────┐                 │    │
-│  │   │Central  │  │Shallow  │  │Deep     │                 │    │
-│  │   │Compart. │◄─┤Periph.  │◄─┤Periph.  │                 │    │
-│  │   │   C1    │  │   C2    │  │   C3    │                 │    │
-│  │   └────┬────┘  └─────────┘  └─────────┘                 │    │
-│  │        │                                                │    │
-│  │        ▼                                                │    │
-│  │   ┌─────────┐       ┌─────────────────────────┐         │    │
-│  │   │Effect   │─────▶│ Hill Sigmoid Emax Model │──▶ BIS  │    │
-│  │   │Site Ce  │       │ BIS = E0 - Emax*f(Ce)   │         │    │
-│  │   └─────────┘       └─────────────────────────┘         │    │
-│  │                                                         │    │
+│  │     Dual Drug Patient Model (State-Space: ẋ = Ax + Bu)  │    │
+│  │   ┌─────────────────────┐  ┌─────────────────────┐      │    │
+│  │   │ Schnider (Propofol) │  │  Minto (Remifentanil)│      │    │
+│  │   │ C1, C2, C3, Ce_PPF  │  │  C1, C2, C3, Ce_RFTN │      │    │
+│  │   └─────────┬───────────┘  └──────────┬──────────┘      │    │
+│  │             │                         │                 │    │
+│  │             ▼                         ▼                 │    │
+│  │   ┌─────────────────────────────────────────────────┐   │    │
+│  │   │        Drug Interaction BIS Model (32)          │   │    │
+│  │   │ BIS = 98·(1 + e^(Ce_PPF/4.47) + e^(Ce_RFTN/19.3))^(-1.43) │
+│  │   └─────────────────────────────────────────────────┘   │    │
 │  └─────────────────────────────────────────────────────────┘    │
 │                                                                 │
+│  Reward: R = 1 / (|g - BIS| + α)  (Formulation 40)              │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -83,26 +97,27 @@ Where:
 ```
 QRL_Propofol_Infusion/
 ├── config/
-│   └── hyperparameters.yaml      # Configuration file
+│   └── hyperparameters.yaml      # Configuration (DDPG/PPO, encoders, rewards)
 ├── src/
 │   ├── __init__.py
 │   ├── environment/
 │   │   ├── __init__.py
-│   │   ├── patient_simulator.py  # Schnider PK/PD model
-│   │   └── propofol_env.py       # Gymnasium environment
+│   │   ├── patient_simulator.py  # Schnider & Minto PK/PD models
+│   │   └── propofol_env.py       # Gymnasium environment (8-dim state)
 │   ├── models/
 │   │   ├── __init__.py
 │   │   ├── vqc.py                # Variational Quantum Circuit
-│   │   └── networks.py           # Classical neural networks
+│   │   └── networks.py           # LSTM, Transformer, Critics, BIS Predictor
 │   ├── agents/
 │   │   ├── __init__.py
-│   │   └── quantum_agent.py      # Quantum DDPG agent
+│   │   ├── quantum_agent.py      # Quantum DDPG agent
+│   │   └── quantum_ppo_agent.py  # Quantum PPO agent (Formulations 41-49)
 │   └── utils/
 │       ├── __init__.py
-│       ├── metrics.py            # Performance metrics (MDPE, MDAPE, etc.)
+│       ├── metrics.py            # MDPE, MDAPE, Wobble (Formulations 50-52)
 │       └── visualization.py      # Plotting utilities
 ├── experiments/
-│   └── train_quantum.py          # Training script
+│   └── train_quantum.py          # Training script (DDPG/PPO support)
 ├── requirements.txt
 └── README.md
 ```
@@ -129,21 +144,60 @@ pip install -r requirements.txt
 ### Training
 
 ```bash
-# Train with default configuration
+# Train DDPG with default configuration
 python experiments/train_quantum.py
 
-# Train with custom settings
-python experiments/train_quantum.py --episodes 500 --seed 42
+# Train PPO with LSTM encoder
+python experiments/train_quantum.py --algorithm ppo --encoder lstm --episodes 1000
+
+# Train DDPG with Transformer encoder
+python experiments/train_quantum.py --algorithm ddpg --encoder transformer --seed 42
+
+# Train with original reward function (Formulation 40)
+python experiments/train_quantum.py --algorithm ppo --use_original_reward
+
+# Train with remifentanil external input
+python experiments/train_quantum.py --algorithm ddpg --encoder lstm --remifentanil
 
 # Resume from checkpoint
 python experiments/train_quantum.py --resume logs/experiment/checkpoints/checkpoint_500.pt
 ```
+
+### Command Line Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--algorithm` | RL algorithm: `ddpg` or `ppo` | `ddpg` |
+| `--encoder` | Temporal encoder: `none`, `lstm`, `transformer`, `hybrid` | `none` |
+| `--episodes` | Number of training episodes | 1000 |
+| `--seed` | Random seed | 42 |
+| `--use_original_reward` | Use R = 1/(\|g-BIS\|+α) reward | False |
+| `--remifentanil` | Enable remifentanil external input | False |
 
 ### Configuration
 
 Edit `config/hyperparameters.yaml` to customize:
 
 ```yaml
+# Algorithm Selection
+algorithm:
+  type: "ppo"  # or "ddpg"
+  
+  ppo:  # PPO-specific (Formulations 41-49)
+    gae_lambda: 0.95      # GAE λ (46)
+    clip_epsilon: 0.2     # Clipping ε (42)
+    value_coef: 0.5       # Value loss coefficient (43)
+    entropy_coef: 0.01    # Entropy bonus (45)
+
+# Temporal Encoder (Fig.4)
+encoder:
+  type: "lstm"  # or "transformer", "none", "hybrid"
+  sequence_length: 10
+  lstm:
+    hidden_dim: 64
+    num_layers: 2
+    bidirectional: true
+
 # Quantum Circuit
 quantum:
   n_qubits: 2
@@ -152,43 +206,46 @@ quantum:
 # Environment
 environment:
   bis_target: 50
-  bis_min: 40
-  bis_max: 60
-  dose_max: 200.0
-
-# Training
-training:
-  total_episodes: 1000
-  batch_size: 64
-  gamma: 0.99
+  use_original_reward: true  # Formulation (40)
+  remifentanil:
+    enabled: true
 ```
 
 ## 📈 Performance Metrics
 
-Following the CBIM paper, we evaluate using clinical anesthesia metrics:
+Following the CBIM paper formulations (50)-(52):
 
-| Metric | Description | Target |
-|--------|-------------|--------|
-| **MDPE** | Median Performance Error (bias) | |MDPE| < 10% |
-| **MDAPE** | Median Absolute Performance Error (accuracy) | MDAPE < 20% |
-| **Wobble** | Intra-individual variability | Lower is better |
-| **Time in Target** | % time BIS in 40-60 range | > 80% |
+| Metric | Formula | Description | Target |
+|--------|---------|-------------|---------|
+| **MDPE** (50) | `Median(PE)` | Median Performance Error (bias) | \|MDPE\| < 10% |
+| **MDAPE** (51) | `Median(\|PE\|)` | Median Absolute Performance Error (accuracy) | MDAPE < 20% |
+| **Wobble** (52) | `Median(\|PE - MDPE\|)` | Intra-individual variability | Lower is better |
+| **Time in Target** | - | % time BIS in 40-60 range | > 80% |
+
+Where Performance Error: $PE_t = \frac{BIS_t - g}{g} \times 100$
 
 ## 🔬 Mathematical Formulation
 
-### PK Model (Schnider)
+### State-Space Form (1)-(3)
+$$\dot{x} = Ax + Bu$$
+
+### PK Model - Schnider (4)-(17)
 $$\frac{dC_1}{dt} = \frac{u(t)}{V_1} - (k_{10} + k_{12} + k_{13})C_1 + k_{21}\frac{V_2}{V_1}C_2 + k_{31}\frac{V_3}{V_1}C_3$$
 
-### Effect-Site Equilibration
+### Effect-Site Equilibration (16)
 $$\frac{dC_e}{dt} = k_{e0}(C_1 - C_e)$$
 
-### BIS Prediction (Hill Model)
-$$BIS = E_0 - E_{max} \cdot \frac{C_e^{\gamma}}{C_e^{\gamma} + EC_{50}^{\gamma}}$$
+### Drug Interaction BIS Model (32)
+$$BIS = 98.0 \cdot \left(1 + e^{C_{e,PPF}/4.47} + e^{C_{e,RFTN}/19.3}\right)^{-1.43}$$
 
-### Reward Function
-$$r_t = -\alpha \cdot PE_t^2 - \beta \cdot u_t - \gamma \cdot |\Delta u_t| + \text{safety penalties}$$
+### Reward Function (40)
+$$R_t = \frac{1}{|g - BIS_t| + \alpha}$$
 
-Where $PE_t = \frac{BIS_t - BIS_{target}}{BIS_{target}} \times 100$
+### PPO Clipped Objective (42)
+$$L^{CLIP}(\theta) = \mathbb{E}\left[\min\left(r_t(\theta)\hat{A}_t, \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon)\hat{A}_t\right)\right]$$
+
+### GAE Advantage Estimation (46)
+$$\hat{A}_t = \sum_{l=0}^{\infty}(\gamma\lambda)^l \delta_{t+l}$$
 
 ## 🔧 Dependencies
 

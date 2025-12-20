@@ -23,12 +23,12 @@ from .quantum_agent import (
     QuantumDDPGAgent, 
     ReplayBuffer, 
     SequenceReplayBuffer,
-    EncoderType
+    EncoderType,
+    HardwareOptimizedQuantumAgent
 )
 from .quantum_ppo_agent import (
     QuantumPPOAgent,
-    RolloutBuffer,
-    QuantumPPOPolicy
+    RolloutBuffer
 )
 
 __all__ = [
@@ -38,5 +38,5 @@ __all__ = [
     "SequenceReplayBuffer",
     "RolloutBuffer",
     "EncoderType",
-    "QuantumPPOPolicy"
+    "HardwareOptimizedQuantumAgent"
 ]

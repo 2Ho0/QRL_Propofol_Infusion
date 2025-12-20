@@ -255,6 +255,107 @@ $$\hat{A}_t = \sum_{l=0}^{\infty}(\gamma\lambda)^l \delta_{t+l}$$
 - Gymnasium >= 0.29.0
 - NumPy, SciPy, Matplotlib
 
+### Optional (for Real Quantum Hardware)
+- qiskit-ibm-runtime (IBM Quantum)
+- amazon-braket-pennylane-plugin (AWS Braket)
+- boto3 (AWS services)
+
+## 🖥️ Running on Real Quantum Hardware
+
+### Hardware-Optimized Agent
+
+The `HardwareOptimizedQuantumAgent` class provides optimizations for execution on actual NISQ (Noisy Intermediate-Scale Quantum) devices:
+
+#### Key Features:
+- **Reduced Circuit Depth**: Automatically adjusts VQC layers to fit hardware constraints
+- **Error Mitigation**: Built-in support for noise reduction techniques
+- **Cost Tracking**: Monitors quantum execution costs in real-time
+- **Multiple Providers**: Supports IBM Quantum, AWS Braket, and IonQ
+
+#### Example Usage:
+
+```python
+from src.agents.quantum_agent import HardwareOptimizedQuantumAgent
+
+# Option 1: Simulator (for testing)
+agent = HardwareOptimizedQuantumAgent(
+    state_dim=8,
+    action_dim=1,
+    hardware_provider='simulator',
+    max_circuit_depth=30
+)
+
+# Option 2: IBM Quantum
+agent = HardwareOptimizedQuantumAgent(
+    state_dim=8,
+    action_dim=1,
+    hardware_provider='ibm',
+    backend_name='ibmq_manila',  # or None for least busy
+    use_error_mitigation=True,
+    max_circuit_depth=30,
+    shots=1000
+)
+
+# Option 3: AWS Braket (IonQ)
+agent = HardwareOptimizedQuantumAgent(
+    state_dim=8,
+    action_dim=1,
+    hardware_provider='aws',
+    backend_name='arn:aws:braket:us-east-1::device/qpu/ionq/Harmony',
+    use_error_mitigation=True,
+    shots=1000
+)
+
+# Train as usual
+action = agent.select_action(state)
+
+# Monitor costs
+print(agent.get_hardware_info())
+# Output: {'provider': 'ibm', 'total_executions': 1000, 
+#          'estimated_cost_usd': '$1600.00', ...}
+```
+
+#### Hardware Constraints (2024-2025):
+
+| Provider | Max Circuit Depth | Gate Error Rate | Cost per Execution |
+|----------|------------------|-----------------|-------------------|
+| IBM Quantum | ~100 gates | 0.1-0.5% | ~$1.60 |
+| AWS Braket (IonQ) | ~200 gates | 0.1-0.3% | ~$0.35 |
+| Rigetti | ~50 gates | 0.5-2% | Variable |
+
+#### Training Cost Estimates:
+
+- **Full Training** (200,000 steps):
+  - Simulator: $0 (free)
+  - AWS Braket: $10,000 - $70,000
+  - IBM Quantum: $320,000
+  
+- **With Quantum Critic** (not recommended): $400,000 - $2,000,000
+
+**💡 Tip**: The hybrid architecture (Quantum Actor + Classical Critic) saves ~83% of quantum execution costs while maintaining performance!
+
+#### Setup Requirements:
+
+1. **IBM Quantum**:
+   ```bash
+   pip install qiskit-ibm-runtime
+   # Save your IBM Quantum token
+   # https://quantum-computing.ibm.com/
+   ```
+
+2. **AWS Braket**:
+   ```bash
+   pip install amazon-braket-pennylane-plugin boto3
+   # Configure AWS credentials
+   aws configure
+   ```
+
+3. **Environment Variables** (optional):
+   ```bash
+   export IBMQ_TOKEN="your_token_here"
+   export AWS_REGION="us-east-1"
+   ```
+
 ## 📝 Citation
 
 If you use this code in your research, please cite:

@@ -108,6 +108,32 @@ quantum:
   
   # Action mapping
   action_scale: 200.0         # Max propofol dose for action scaling
+  
+  # Hardware Configuration (for HardwareOptimizedQuantumAgent)
+  hardware:
+    # Hardware provider: "simulator", "ibm", "aws", "ionq"
+    provider: "simulator"
+    
+    # Specific backend name (optional, None for auto-selection)
+    backend_name: null        # e.g., "ibmq_manila", "arn:aws:braket:..."
+    
+    # Error mitigation for NISQ devices
+    use_error_mitigation: true
+    
+    # Maximum circuit depth constraint for hardware
+    max_circuit_depth: 50     # Conservative for NISQ (2024-2025)
+    
+    # Shots for quantum measurements (more shots = less noise)
+    hardware_shots: 1000      # Overrides 'shots' when using real hardware
+    
+    # Batch quantum execution for efficiency
+    batch_execution: false    # Experimental feature
+    
+    # Credentials path (optional)
+    credentials_path: null    # Path to quantum provider credentials
+    
+    # Cost tracking
+    enable_cost_tracking: true
 
 # =============================================================================
 # Temporal Encoder Configuration (Fig.4)

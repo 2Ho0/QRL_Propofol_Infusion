@@ -30,24 +30,30 @@ This project implements **Quantum Deep Deterministic Policy Gradient (QDDPG)** a
 │  │  ┌─────────────┐  or  ┌─────────────────────────────┐    │   │
 │  │  │    LSTM     │      │      Transformer            │    │   │
 │  │  │ Bidirectional│      │  Multi-Head Attention      │    │   │
-│  │  └─────────────┘      └─────────────────────────────┘    │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-│                              ▼                                  │
+│  │  └──────┬──────┘      └──────────┬──────────────────┘    │   │
+│  │         │ (if encoder_type != 'none')                     │   │
+│  │         │ Sequence [T×8D] → Encoded [32D]                 │   │
+│  └─────────┼──────────────────────────────────────────────────┘   │
+│            ▼                                                     │
 │  ┌──────────────┐     ┌─────────────────────────────────┐       │
 │  │   State      │     │     Quantum Policy (Actor)      │       │
-│  │   Encoder    │──▶ │  ┌───────────────────────────┐   │       │
-│  │  (Classical) │     │  │    2-Qubit VQC            │  │       │
-│  └──────────────┘     │  │  • Angle Encoding         │  │       │
-│                       │  │  • RY-RZ Rotations        │  │──▶ Action
+│  │  [8D] or     │     │  ┌───────────────────────────┐  │       │
+│  │ Encoded [32D]│──▶  │  │    2-Qubit VQC            │  │       │
+│  │              │     │  │  • RX Angle Encoding      │  │       │
+│  └──────────────┘     │  │  • RY-RZ Rotations        │  │──▶ Action
 │                       │  │  • CNOT Entanglement      │  │   (Dose)
 │                       │  │  • 4 Variational Layers   │  │       │
 │                       │  └───────────────────────────┘  │       │
+│                       │  • Classical NN [D→2D] before │       │
+│                       │    VQC for dimension reduction │       │
+│                       │  • Output: expectation [-1,1] │       │
+│                       │    → Sigmoid → Action [0,1]   │       │
 │                       └─────────────────────────────────┘       │
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────┐    │
 │  │              Twin Critic Networks (Classical)           │    │
 │  │   Q1(s,a) & Q2(s,a) → Value Estimation (TD3 style)      │    │
+│  │   Input: Encoded state [32D or 8D] + Action [1D]        │    │
 │  └─────────────────────────────────────────────────────────┘    │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
@@ -79,17 +85,26 @@ This project implements **Quantum Deep Deterministic Policy Gradient (QDDPG)** a
 
 ## 🧬 Quantum Circuit
 
-The 2-qubit Variational Quantum Circuit:
+The 2-qubit Variational Quantum Circuit (VQC):
 
 ```
-|0⟩ ─ RX(θ_in[0]) ─ RY(θ[0]) ─ RZ(θ[1]) ─●─ RY(θ[4]) ─ RZ(θ[5]) ─●─ ... ─ M
-                                          │                       │
-|0⟩ ─ RX(θ_in[1]) ─ RY(θ[2]) ─ RZ(θ[3]) ─⊕─ RY(θ[6]) ─ RZ(θ[7]) ─⊕─ ... ─ M
+|0⟩ ─ RX(θ_in[0]·π) ─ RY(θ[0,0,0]) ─ RZ(θ[0,0,1]) ─●─ ... ─ RY(θ[L,0,0]) ─ RZ(θ[L,0,1]) ─ M
+                                                    │                                      
+|0⟩ ─ RX(θ_in[1]·π) ─ RY(θ[0,1,0]) ─ RZ(θ[0,1,1]) ─⊕─ ... ─ RY(θ[L,1,0]) ─ RZ(θ[L,1,1]) ─ M
+                                                    │
+                                                    └─ Circular CNOT back to qubit 0
 
 Where:
-- θ_in: Encoded state features (BIS error, Ce)
-- θ: Trainable variational parameters
-- M: Measurement (expectation value → action)
+- θ_in: Encoded state features (2 features from state/encoder)
+- θ[layer, qubit, gate]: Trainable variational parameters
+- L: Number of layers (default: 4)
+- M: Measurement (PauliZ expectation → action)
+
+Implementation Details:
+- Encoding: Angle embedding with RX gates (θ_in[i] * π)
+- Variational Layers: RY-RZ rotations per qubit
+- Entanglement: CNOT cascade + circular entanglement
+- Output: Expectation value ∈ [-1, 1] → Scaled to action [0, 1]
 ```
 
 ## 📁 Project Structure
@@ -141,7 +156,34 @@ source venv/bin/activate  # Linux/Mac
 pip install -r requirements.txt
 ```
 
-### Training
+### Training Modes
+
+#### 🌟 Mode 1: Hybrid Training (RECOMMENDED)
+Best performance by combining real patient data and simulator exploration.
+
+```bash
+# Step 1: Prepare VitalDB data (one-time setup, ~5-10 min)
+python prepare_vitaldb_quick.py  # Downloads 20 cases
+
+# Step 2: Full hybrid training (~3-6 hours)
+python experiments/train_hybrid.py \
+  --n_cases 100 \
+  --offline_epochs 50 \
+  --online_episodes 500 \
+  --encoder none \
+  --seed 42
+
+# What happens:
+# Stage 1: Pre-train on 80 real VitalDB cases (offline behavioral cloning)
+# Stage 2: Fine-tune on simulator (online RL with exploration)
+# Stage 3: Test on 10 VitalDB cases + 20 simulator patients
+
+# Quick test (10 min):
+python experiments/train_hybrid.py --n_cases 20 --offline_epochs 5 --online_episodes 50
+```
+
+#### ⚡ Mode 2: Pure Online Training (Fast)
+Train directly on simulator - no VitalDB data needed.
 
 ```bash
 # Train DDPG with default configuration
@@ -152,15 +194,61 @@ python experiments/train_quantum.py --algorithm ppo --encoder lstm --episodes 10
 
 # Train DDPG with Transformer encoder
 python experiments/train_quantum.py --algorithm ddpg --encoder transformer --seed 42
+```
 
-# Train with original reward function (Formulation 40)
-python experiments/train_quantum.py --algorithm ppo --use_original_reward
+#### 🔬 Mode 3: Pure Offline Training (Real Data Only)
+Train only on VitalDB real patient data.
 
-# Train with remifentanil external input
-python experiments/train_quantum.py --algorithm ddpg --encoder lstm --remifentanil
+```bash
+# Step 1: Prepare data
+python prepare_vitaldb_quick.py
 
-# Resume from checkpoint
-python experiments/train_quantum.py --resume logs/experiment/checkpoints/checkpoint_500.pt
+# Step 2: Train offline
+python experiments/train_offline.py \
+  --data_path ./data/offline_dataset/vitaldb_offline_data_small.pkl \
+  --n_epochs 100 \
+  --batch_size 64
+```
+
+### Training Comparison
+
+| Mode | Data Source | Training Time | Best For | Performance |
+|------|-------------|---------------|----------|-------------|
+| **Hybrid** ⭐ | VitalDB + Simulator | 3-6 hours | Production | ⭐⭐⭐⭐⭐ |
+| Online | Simulator only | 2-4 hours | Development | ⭐⭐⭐⭐ |
+| Offline | VitalDB only | 1-2 hours | Safety testing | ⭐⭐⭐ |
+
+### Hybrid Training Pipeline
+
+```
+┌──────────────────────────────────────────────────────┐
+│          VitalDB Dataset (100 cases)                 │
+│              Real Patient Data                       │
+└──────────────────────────────────────────────────────┘
+                       ↓ Split
+      ┌────────────────┼────────────────┐
+      ↓                ↓                ↓
+ ┌────────┐      ┌────────┐      ┌────────┐
+ │ TRAIN  │      │  VAL   │      │  TEST  │
+ │80 cases│      │10 cases│      │10 cases│
+ └────────┘      └────────┘      └────────┘
+      ↓
+ [STAGE 1]
+Offline Pre-train
+Learn from experts
+      ↓
+┌──────────────────────────────────────────────────────┐
+│        Simulator (Schnider PK/PD Model)              │
+│           Unlimited Synthetic Data                   │
+└──────────────────────────────────────────────────────┘
+      ↓
+ [STAGE 2]
+Online Fine-tune
+Explore & optimize
+      ↓
+ [STAGE 3]
+Test on both
+VitalDB + Simulator
 ```
 
 ### Command Line Options

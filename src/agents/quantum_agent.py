@@ -741,15 +741,18 @@ class QuantumDDPGAgent:
         Returns:
             Action array (scaled to [0, action_scale]) - propofol dose
         """
+        # Get device from actor
+        device = next(self.actor.parameters()).device
+        
         with torch.no_grad():
             # Encode state if using temporal encoder
             if self.encoder is not None and state_sequence is not None:
-                state_seq_tensor = torch.FloatTensor(state_sequence)
+                state_seq_tensor = torch.FloatTensor(state_sequence).to(device)
                 if state_seq_tensor.dim() == 2:
                     state_seq_tensor = state_seq_tensor.unsqueeze(0)  # Add batch dim
                 
                 if self.encoder_type == EncoderType.HYBRID and demographics is not None:
-                    demo_tensor = torch.FloatTensor(demographics)
+                    demo_tensor = torch.FloatTensor(demographics).to(device)
                     if demo_tensor.dim() == 1:
                         demo_tensor = demo_tensor.unsqueeze(0)
                     encoded_state = self.encoder(state_seq_tensor, demo_tensor)
@@ -762,12 +765,12 @@ class QuantumDDPGAgent:
                         encoded_state = encoder_output
             else:
                 # Use state directly
-                encoded_state = torch.FloatTensor(state)
+                encoded_state = torch.FloatTensor(state).to(device)
                 if encoded_state.dim() == 1:
                     encoded_state = encoded_state.unsqueeze(0)
             
             # Get action from quantum policy (in [0, 1])
-            action = self.actor(encoded_state).squeeze(0).numpy()
+            action = self.actor(encoded_state).cpu().squeeze(0).numpy()
         
         # Add exploration noise
         if add_noise and not deterministic:
@@ -827,14 +830,29 @@ class QuantumDDPGAgent:
         if not self.replay_buffer.is_ready(self.batch_size):
             return {}
         
+        # Get device from actor
+        device = next(self.actor.parameters()).device
+        
         # Sample batch
         if self.encoder_type != EncoderType.NONE:
             states, actions, rewards, next_states, dones = \
                 self.replay_buffer.sample(self.batch_size)
             # states shape: [batch, seq_len, state_dim]
+            # Move to device
+            states = states.to(device)
+            actions = actions.to(device)
+            rewards = rewards.to(device)
+            next_states = next_states.to(device)
+            dones = dones.to(device)
         else:
             states, actions, rewards, next_states, dones = \
                 self.replay_buffer.sample(self.batch_size)
+            # Move to device
+            states = states.to(device)
+            actions = actions.to(device)
+            rewards = rewards.to(device)
+            next_states = next_states.to(device)
+            dones = dones.to(device)
         
         # Encode states if using temporal encoder
         if self.encoder is not None:

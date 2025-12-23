@@ -1,2 +1,6 @@
 logs/
 *.pdf
+data/
+*.pkl
+*.pyc
+__pycache__/

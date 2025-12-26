@@ -27,8 +27,19 @@ from models.networks import (
 )
 
 
-def create_mlp(input_dim: int, output_dim: int, hidden_dims: List[int], activation=nn.ReLU):
-    """Create MLP network."""
+def create_mlp(input_dim: int, output_dim: int, hidden_dims: List[int], activation=nn.ReLU) -> nn.Sequential:
+    """
+    Create Multi-Layer Perceptron network.
+    
+    Args:
+        input_dim: Input dimension
+        output_dim: Output dimension
+        hidden_dims: List of hidden layer dimensions
+        activation: PyTorch activation class (default: nn.ReLU)
+    
+    Returns:
+        nn.Sequential network with specified architecture
+    """
     layers = []
     prev_dim = input_dim
     
@@ -149,8 +160,17 @@ class ClassicalActorCritic(nn.Module):
         
         return mean, std, value
     
-    def get_action(self, state: torch.Tensor, deterministic: bool = False):
-        """Sample action from policy."""
+    def get_action(self, state: torch.Tensor, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Sample action from policy.
+        
+        Args:
+            state: State tensor [batch, state_dim]
+            deterministic: If True, return mean action; if False, sample from distribution
+        
+        Returns:
+            Tuple of (action, value) where action is [batch, action_dim] and value is [batch, 1]
+        """
         mean, std, value = self.forward(state)
         
         if deterministic:
@@ -160,8 +180,20 @@ class ClassicalActorCritic(nn.Module):
             action = dist.sample()
             return action, value
     
-    def evaluate_actions(self, state: torch.Tensor, action: torch.Tensor):
-        """Evaluate actions for PPO update."""
+    def evaluate_actions(self, state: torch.Tensor, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Evaluate actions for PPO update.
+        
+        Args:
+            state: State tensor [batch, state_dim]
+            action: Action tensor [batch, action_dim]
+        
+        Returns:
+            Tuple of (value, log_prob, entropy) for PPO loss computation:
+                - value: State value [batch, 1]
+                - log_prob: Log probability of action [batch, 1]
+                - entropy: Policy entropy [batch, 1]
+        """
         mean, std, value = self.forward(state)
         
         dist = Normal(mean, std)
@@ -239,7 +271,16 @@ class ClassicalPPOAgent:
         self.dones = []
     
     def select_action(self, state: np.ndarray, deterministic: bool = False) -> np.ndarray:
-        """Select action from policy."""
+        """
+        Select action from policy.
+        
+        Args:
+            state: Current state observation as numpy array
+            deterministic: If True, return mean action; if False, sample from policy
+        
+        Returns:
+            Action as numpy array in [0, 1] range
+        """
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
@@ -255,8 +296,15 @@ class ClassicalPPOAgent:
         
         return action_np
     
-    def store_transition(self, reward: float, done: bool, log_prob: Optional[float] = None):
-        """Store transition in trajectory buffer."""
+    def store_transition(self, reward: float, done: bool, log_prob: Optional[float] = None) -> None:
+        """
+        Store transition in trajectory buffer.
+        
+        Args:
+            reward: Reward received
+            done: Whether episode terminated
+            log_prob: Optional log probability of action
+        """
         self.rewards.append(reward)
         self.dones.append(done)
         if log_prob is not None:
@@ -270,8 +318,9 @@ class ClassicalPPOAgent:
             next_value: Value of the next state (0 if terminal)
         
         Returns:
-            advantages: GAE advantages
-            returns: Discounted returns
+            Tuple of (advantages, returns):
+                - advantages: GAE advantages for policy update
+                - returns: Discounted returns for value function update
         """
         values = self.values + [next_value]
         advantages = []
@@ -289,15 +338,18 @@ class ClassicalPPOAgent:
     
     def update(self, next_state: np.ndarray, done: bool, epochs: int = 10) -> Dict[str, float]:
         """
-        Update policy using PPO.
+        Update policy using PPO clipped objective.
         
         Args:
             next_state: Next state for GAE computation
             done: Whether episode is done
-            epochs: Number of optimization epochs
+            epochs: Number of optimization epochs over the trajectory
         
         Returns:
-            Dictionary of training metrics
+            Dictionary of training metrics:
+                - policy_loss: Mean policy loss over epochs
+                - value_loss: Mean value function loss
+                - entropy: Mean policy entropy
         """
         # Compute next value
         with torch.no_grad():

@@ -303,7 +303,12 @@ class ClassicalDDPGAgent:
         self.update_every = training_config.get('update_every', 1)
     
     def _default_config(self) -> Dict:
-        """Return default configuration."""
+        """
+        Return default configuration for Classical DDPG.
+        
+        Returns:
+            Dictionary containing default hyperparameters for networks, encoder, and training
+        """
         return {
             'networks': {
                 'actor': {
@@ -349,13 +354,13 @@ class ClassicalDDPGAgent:
         Select action given state.
         
         Args:
-            state: Current state
-            deterministic: If True, no noise added
-            add_noise: Whether to add exploration noise
-            state_sequence: Optional sequence for temporal encoder
+            state: Current state observation
+            deterministic: If True, return deterministic action without noise
+            add_noise: If True, add exploration noise
+            state_sequence: Optional sequence of states for temporal encoder
         
         Returns:
-            Action array (scaled to action_scale)
+            Action array scaled to action_scale range
         """
         device = next(self.actor.parameters()).device
         
@@ -404,7 +409,7 @@ class ClassicalDDPGAgent:
             done: Whether episode ended
         
         Returns:
-            Training metrics
+            Dictionary of training metrics (critic_loss, actor_loss, q_value_mean) if update performed, empty dict otherwise
         """
         # Store transition
         action_normalized = action / self.action_scale
@@ -420,7 +425,18 @@ class ClassicalDDPGAgent:
         return metrics
     
     def update(self) -> Dict[str, float]:
-        """Perform DDPG update."""
+        """
+        Perform DDPG update step with Twin Critic networks.
+        
+        Updates critic networks using TD3-style double Q-learning,
+        then updates actor network using policy gradient.
+        
+        Returns:
+            Dictionary containing:
+                - critic_loss: Combined loss of twin critics
+                - actor_loss: Actor network loss
+                - q_value_mean: Mean Q-value for monitoring
+        """
         # Sample batch
         states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
         
@@ -487,17 +503,22 @@ class ClassicalDDPGAgent:
             'q_value_mean': q1.mean().item()
         }
     
-    def reset_noise(self):
-        """Reset exploration noise."""
+    def reset_noise(self) -> None:
+        """Reset exploration noise to initial state."""
         self.noise.reset()
     
-    def decay_noise(self):
-        """Decay exploration noise."""
+    def decay_noise(self) -> None:
+        """Decay exploration noise sigma for annealing."""
         if hasattr(self.noise, 'decay_sigma'):
             self.noise.decay_sigma()
     
-    def save(self, path: str):
-        """Save agent checkpoint."""
+    def save(self, path: str) -> None:
+        """
+        Save agent checkpoint to disk.
+        
+        Args:
+            path: File path to save checkpoint
+        """
         checkpoint = {
             'actor_state_dict': self.actor.state_dict(),
             'actor_target_state_dict': self.actor_target.state_dict(),
@@ -517,8 +538,13 @@ class ClassicalDDPGAgent:
         
         torch.save(checkpoint, path)
     
-    def load(self, path: str):
-        """Load agent checkpoint."""
+    def load(self, path: str) -> None:
+        """
+        Load agent checkpoint from disk.
+        
+        Args:
+            path: File path to load checkpoint from
+        """
         checkpoint = torch.load(path)
         
         self.actor.load_state_dict(checkpoint['actor_state_dict'])

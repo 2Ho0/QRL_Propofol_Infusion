@@ -258,7 +258,7 @@ bis_additive = model_additive.compute_bis(3.0, 2.0)
 
 #### Variational Quantum Circuit (VQC)
 
-**Location**: `src/models/quantum_layers.py`
+**Location**: `src/models/vqc.py`
 
 **Architecture**:
 ```
@@ -408,8 +408,8 @@ QRL_Propofol_Infusion/
 │   │   └── propofol_env.py       # Gymnasium environment (8-dim state)
 │   ├── models/
 │   │   ├── __init__.py
-│   │   ├── quantum_layers.py     # Variational Quantum Circuit (VQC)
-│   │   ├── encoders.py           # LSTM/Transformer temporal encoders
+│   │   ├── vqc.py                # Variational Quantum Circuit (VQC)
+│   │   ├── networks.py           # LSTM/Transformer encoders, Critics
 │   │   ├── pharmacokinetics/
 │   │   │   ├── schnider_model.py # Propofol 3-compartment PK
 │   │   │   └── minto_model.py    # Remifentanil 3-compartment PK
@@ -420,7 +420,7 @@ QRL_Propofol_Infusion/
 │   │   ├── quantum_agent.py      # Quantum DDPG agent
 │   │   ├── quantum_ppo_agent.py  # Quantum PPO agent (Formulations 41-49)
 │   │   ├── classical_agent.py    # Classical DDPG baseline
-│   │   └── ppo_agent.py          # Classical PPO baseline
+│   │   └── classical_ppo_agent.py # Classical PPO baseline
 │   ├── data/
 │   │   └── vitaldb_loader.py     # VitalDB dataset loading
 │   ├── visualization/
@@ -472,11 +472,30 @@ pip install -r requirements.txt
 
 ### Training
 
-#### 1. Hybrid Training (Offline → Online)
+#### 1. Offline RL Training (VitalDB Real Patient Data)
 
 ```bash
-# Single drug (Propofol only)
+# Download and preprocess VitalDB data (first time only)
+python experiments/train_offline.py --download --max_cases 100
+
+# Train with Behavioral Cloning (warm-start)
+python experiments/train_offline.py --bc_only --bc_epochs 100
+
+# Train with BC + Conservative Q-Learning (CQL)
+python experiments/train_offline.py --bc_epochs 50 --cql_epochs 500
+
+# Evaluate on VitalDB test set
+python experiments/train_offline.py --evaluate --checkpoint logs/offline/best_model.pt
+```
+
+#### 2. Hybrid Training (Offline → Online)
+
+```bash
+# Single drug (Propofol only) - DDPG
 python experiments/train_hybrid.py --n_cases 100 --offline_epochs 50 --online_episodes 500
+
+# Single drug - PPO
+python experiments/train_hybrid_ppo.py --n_cases 100 --offline_epochs 50 --online_episodes 500
 
 # With LSTM encoder
 python experiments/train_hybrid.py --n_cases 100 --offline_epochs 50 --online_episodes 500 --encoder lstm
@@ -485,7 +504,7 @@ python experiments/train_hybrid.py --n_cases 100 --offline_epochs 50 --online_ep
 python experiments/train_hybrid.py --n_cases 20 --offline_epochs 5 --online_episodes 50
 ```
 
-#### 2. Dual Drug Training (Propofol + Remifentanil)
+#### 3. Dual Drug Training (Propofol + Remifentanil)
 
 ```bash
 # Train quantum agent on dual drug control
@@ -498,17 +517,23 @@ python experiments/train_dual_drug.py --n_episodes 500 --encoder lstm
 python experiments/train_dual_drug.py --n_episodes 50
 ```
 
-#### 3. Classical Baseline Training
+#### 4. Online Training (Pure RL)
 
 ```bash
-# Classical DDPG (single drug)
-python experiments/train_classical.py --n_cases 100 --offline_epochs 50 --online_episodes 500
+# Quantum DDPG
+python experiments/train_quantum.py --n_episodes 1000 --encoder lstm
+
+# Classical DDPG
+python experiments/train_classical.py --n_episodes 1000 --encoder none
+
+# Quantum PPO
+python experiments/train_ppo.py --agent_type quantum --n_episodes 1000
 
 # Classical PPO
-python experiments/train_classical_ppo.py --n_episodes 500 --encoder lstm
+python experiments/train_ppo.py --agent_type classical --n_episodes 1000
 ```
 
-#### 4. Comparison Studies
+#### 5. Comparison Studies
 
 ```bash
 # Compare Quantum vs Classical (single drug)
@@ -524,7 +549,21 @@ python experiments/compare_quantum_vs_classical.py \
     --n_cases 20 --offline_epochs 5 --online_episodes 50
 ```
 
-### Command Line Options
+### Key Training Scripts
+
+| Script | Purpose | Algorithm |
+|--------|---------|----------|
+| `train_offline.py` | VitalDB offline RL (BC, CQL) | DDPG |
+| `train_hybrid.py` | Offline→Online (DDPG) | DDPG |
+| `train_hybrid_ppo.py` | Offline→Online (PPO) | PPO |
+| `train_quantum.py` | Pure online quantum DDPG | DDPG |
+| `train_classical.py` | Pure online classical DDPG | DDPG |
+| `train_ppo.py` | Pure online PPO (quantum/classical) | PPO |
+| `train_dual_drug.py` | Dual drug control | DDPG |
+| `compare_quantum_vs_classical.py` | Quantum vs Classical | Both |
+| `compare_ddpg_vs_ppo.py` | DDPG vs PPO | Both |
+
+### Common Command Line Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -554,7 +593,7 @@ This project now supports training on **real patient data** from the VitalDB dat
 #### 1. Download and Preprocess VitalDB Data
 
 ```bash
-# Download 50 cases and create offline dataset
+# Download VitalDB cases and create offline dataset
 python experiments/train_offline.py --download --max_cases 50
 ```
 
@@ -562,7 +601,7 @@ This will:
 - Download VitalDB cases with BIS monitoring and propofol TCI
 - Apply quality filters (BIS SQI > 50, missing data < 20%, duration 30-240 min)
 - Extract state-action-reward tuples matching 8-dim environment state
-- Save preprocessed dataset to `data/offline_dataset/vitaldb_offline.h5`
+- Save preprocessed dataset to `data/offline_dataset/vitaldb_processed.pkl`
 - Split into train (70%), validation (15%), test (15%)
 
 #### 2. Train with Behavioral Cloning (Warm-start)
@@ -587,7 +626,7 @@ CQL adds conservative penalties to prevent unsafe actions not seen in the datase
 
 ```bash
 # Evaluate trained model
-python experiments/train_offline.py --evaluate --checkpoint logs/offline/cql_best.pt
+python experiments/train_offline.py --evaluate --checkpoint logs/offline/best_model.pt
 ```
 
 Compares performance against:
@@ -666,7 +705,7 @@ python experiments/train_offline.py --config config/hyperparameters.yaml --seed 
 
 ### Offline Dataset Structure
 
-The preprocessed dataset (`vitaldb_offline.h5`) contains:
+The preprocessed dataset (`vitaldb_processed.pkl`) contains:
 
 ```
 train/
@@ -791,17 +830,22 @@ Where $PE_t = \frac{BIS_t - g}{g} \times 100$ is the Performance Error at time $
 
 **Quantum DDPG**:
 ```bash
-python experiments/train_quantum.py --episodes 1000 --encoder lstm
+python experiments/train_quantum.py --n_episodes 1000 --encoder lstm
+```
+
+**Classical DDPG**:
+```bash
+python experiments/train_classical.py --n_episodes 1000 --encoder none
 ```
 
 **Quantum PPO**:
 ```bash
-python experiments/train_ppo.py --episodes 1000 --encoder lstm
+python experiments/train_ppo.py --agent_type quantum --n_episodes 1000 --encoder lstm
 ```
 
-**Classical Baseline**:
+**Classical PPO**:
 ```bash
-python experiments/train_classical.py --episodes 1000 --encoder none
+python experiments/train_ppo.py --agent_type classical --n_episodes 1000 --encoder lstm
 ```
 
 ### Hybrid Training (Offline → Online)
@@ -837,83 +881,159 @@ python experiments/compare_ddpg_vs_ppo.py \
 The complete configuration is in `config/hyperparameters.yaml`:
 
 ```yaml
-# Algorithm Selection
-algorithm:
-  type: "ppo"  # or "ddpg"
-  
-  ddpg:
-    lr_actor: 3e-4
-    lr_critic: 1e-3
-    gamma: 0.99
-    tau: 0.005
-    batch_size: 256
-    buffer_size: 100000
-  
-  ppo:  # PPO-specific (Formulations 41-49)
-    lr: 3e-4
-    gae_lambda: 0.95      # GAE λ (46)
-    clip_epsilon: 0.2     # Clipping ε (42)
-    value_coef: 0.5       # Value loss coefficient (43)
-    entropy_coef: 0.01    # Entropy bonus (45)
-    n_epochs: 10
-    batch_size: 256
-    n_steps: 2048
-
-# Temporal Encoder (Fig.4)
-encoder:
-  type: "lstm"  # or "transformer", "none", "hybrid"
-  sequence_length: 10
-  
-  lstm:
-    hidden_dim: 128
-    num_layers: 2
-    bidirectional: true
-  
-  transformer:
-    hidden_dim: 128
-    num_layers: 2
-    num_heads: 4
-    ffn_dim: 512
-
-# Quantum Circuit
-quantum:
-  n_qubits: 2
-  n_layers: 4
-  device: "default.qubit"
-  diff_method: "backprop"
-  
-# Environment
+# =============================================================================
+# Environment Configuration
+# =============================================================================
 environment:
-  bis_target: 50
-  max_steps: 720  # 60 minutes at 5-second intervals
-  dt: 5.0  # seconds
-  use_original_reward: true  # Formulation (40)
-  history_window: 12  # For cumulative dose (60 seconds)
+  bis_target: 50              # Target BIS (Formulation 40)
+  bis_min: 40
+  bis_max: 60
+  bis_baseline: 97
+  
+  dose_min: 0.0               # μg/kg/min
+  dose_max: 200.0
+  
+  dt: 5.0                     # Time step (seconds)
+  episode_duration: 3600      # 60 minutes
+  
+  use_extended_state: true    # 8-dim state (Formulations 36-39)
+  use_original_reward: true   # R = 1/(|g-BIS|+α) (Formulation 40)
+  reward_alpha: 0.1
   
   remifentanil:
     enabled: true
-    induction_rate: 0.5  # μg/kg/min
-    maintenance_rate: 0.2  # μg/kg/min
+    profile_type: "random"    # "constant", "random", "surgical"
+    min_rate: 0.0
+    max_rate: 0.5
+    mean_rate: 0.2
+    std_rate: 0.1
 
-# Training
+# =============================================================================
+# PK/PD Model Configuration (Schnider & Minto)
+# =============================================================================
+pkpd_model:
+  model_type: "schnider"      # Propofol PK model
+  bis_model: "drug_interaction"  # Formulation (32)
+  
+  schnider:
+    ke0: 0.456                # Effect-site equilibration (Formulation 16)
+  
+  minto:
+    ke0: 0.595                # Remifentanil ke0 (Formulation 29)
+  
+  drug_interaction:           # Formulation (32)
+    alpha_ppf: 4.47
+    alpha_rftn: 19.3
+    baseline: 98.0
+    gamma: 1.43
+
+# =============================================================================
+# Quantum Circuit Configuration
+# =============================================================================
+quantum:
+  n_qubits: 2
+  n_layers: 4
+  encoding: "angle"           # "angle" or "amplitude"
+  backend: "default.qubit"
+  diff_method: "backprop"     # Gradient computation
+
+# =============================================================================
+# RL Algorithm Configuration
+# =============================================================================
+ddpg:
+  learning_rate_actor: 0.0003
+  learning_rate_critic: 0.001
+  learning_rate_encoder: 0.001  # Separate encoder optimizer
+  gamma: 0.99                  # Discount factor
+  tau: 0.005                   # Soft update rate
+  batch_size: 256
+  buffer_size: 100000
+  exploration_noise: 0.1       # OU noise
+
+ppo:                           # Formulations (41)-(49)
+  learning_rate: 0.0003
+  gamma: 0.99
+  gae_lambda: 0.95             # GAE λ (Formulation 46)
+  clip_epsilon: 0.2            # Clipping ε (Formulation 42)
+  value_loss_coef: 0.5         # c1 (Formulation 43)
+  entropy_coef: 0.01           # c2 (Formulation 45)
+  max_grad_norm: 0.5
+  n_epochs: 10
+  batch_size: 256
+  n_steps: 2048                # Rollout length
+
+# =============================================================================
+# Encoder Configuration (LSTM/Transformer)
+# =============================================================================
+encoder:
+  type: "lstm"                 # "none", "lstm", "transformer"
+  enabled: true
+  sequence_length: 10
+  hidden_dim: 128
+  
+  lstm:
+    num_layers: 2
+    bidirectional: true
+    dropout: 0.1
+  
+  transformer:
+    num_layers: 2
+    num_heads: 4
+    ffn_dim: 512
+    dropout: 0.1
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
 training:
   n_episodes: 1000
+  max_steps_per_episode: 720   # 60 minutes at 5s intervals
   save_interval: 50
   eval_interval: 10
   n_eval_episodes: 5
+  log_interval: 10
   
-# Offline RL (VitalDB)
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 50
+    min_delta: 0.01
+
+# =============================================================================
+# Offline RL Configuration (VitalDB)
+# =============================================================================
 offline:
+  # Data configuration
+  data:
+    cache_dir: "data/vitaldb_cache"
+    processed_dir: "data/offline_dataset"
+    max_cases: 100
+    train_split: 0.7
+    val_split: 0.15
+    test_split: 0.15
+    
+  # Quality filters
+  filters:
+    bis_sqi_threshold: 50      # BIS signal quality
+    max_missing_ratio: 0.2
+    min_duration: 1800         # 30 minutes
+    max_duration: 14400        # 4 hours
+  
+  # Behavioral Cloning
   behavioral_cloning:
     enabled: true
     epochs: 50
     batch_size: 256
-    learning_rate: 1e-4
+    learning_rate: 0.0001
+    early_stopping_patience: 10
   
+  # Conservative Q-Learning (CQL)
   cql:
-    enabled: false
-    alpha: 1.0
-    min_q_weight: 5.0
+    enabled: true
+    alpha: 1.0                 # CQL regularization
+    min_q_weight: 5.0          # Conservative penalty
+    num_random_actions: 10
+    temperature: 1.0
 ```
 
 ---

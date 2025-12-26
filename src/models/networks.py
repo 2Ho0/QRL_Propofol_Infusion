@@ -53,8 +53,13 @@ class PositionalEncoding(nn.Module):
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
+        Add positional encoding to input tensor.
+        
         Args:
             x: Tensor of shape [batch, seq_len, d_model]
+        
+        Returns:
+            Position-encoded tensor of shape [batch, seq_len, d_model]
         """
         x = x + self.pe[:, :x.size(1), :]
         return self.dropout(x)
@@ -163,7 +168,16 @@ class LSTMEncoder(nn.Module):
         return encoded, hidden
     
     def init_hidden(self, batch_size: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Initialize hidden state."""
+        """
+        Initialize hidden state for LSTM.
+        
+        Args:
+            batch_size: Batch size
+            device: Torch device
+        
+        Returns:
+            Tuple of (h_0, c_0) hidden and cell states
+        """
         num_directions = 2 if self.bidirectional else 1
         h_0 = torch.zeros(self.num_layers * num_directions, batch_size, self.hidden_dim, device=device)
         c_0 = torch.zeros(self.num_layers * num_directions, batch_size, self.hidden_dim, device=device)

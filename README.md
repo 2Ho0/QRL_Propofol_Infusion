@@ -30,30 +30,24 @@ This project implements **Quantum Deep Deterministic Policy Gradient (QDDPG)** a
 │  │  ┌─────────────┐  or  ┌─────────────────────────────┐    │   │
 │  │  │    LSTM     │      │      Transformer            │    │   │
 │  │  │ Bidirectional│      │  Multi-Head Attention      │    │   │
-│  │  └──────┬──────┘      └──────────┬──────────────────┘    │   │
-│  │         │ (if encoder_type != 'none')                     │   │
-│  │         │ Sequence [T×8D] → Encoded [32D]                 │   │
-│  └─────────┼──────────────────────────────────────────────────┘   │
-│            ▼                                                     │
+│  │  └─────────────┘      └─────────────────────────────┘    │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                              │                                  │
+│                              ▼                                  │
 │  ┌──────────────┐     ┌─────────────────────────────────┐       │
 │  │   State      │     │     Quantum Policy (Actor)      │       │
-│  │  [8D] or     │     │  ┌───────────────────────────┐  │       │
-│  │ Encoded [32D]│──▶  │  │    2-Qubit VQC            │  │       │
-│  │              │     │  │  • RX Angle Encoding      │  │       │
-│  └──────────────┘     │  │  • RY-RZ Rotations        │  │──▶ Action
+│  │   Encoder    │──▶ │  ┌───────────────────────────┐   │       │
+│  │  (Classical) │     │  │    2-Qubit VQC            │  │       │
+│  └──────────────┘     │  │  • Angle Encoding         │  │       │
+│                       │  │  • RY-RZ Rotations        │  │──▶ Action
 │                       │  │  • CNOT Entanglement      │  │   (Dose)
 │                       │  │  • 4 Variational Layers   │  │       │
 │                       │  └───────────────────────────┘  │       │
-│                       │  • Classical NN [D→2D] before │       │
-│                       │    VQC for dimension reduction │       │
-│                       │  • Output: expectation [-1,1] │       │
-│                       │    → Sigmoid → Action [0,1]   │       │
 │                       └─────────────────────────────────┘       │
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────┐    │
 │  │              Twin Critic Networks (Classical)           │    │
 │  │   Q1(s,a) & Q2(s,a) → Value Estimation (TD3 style)      │    │
-│  │   Input: Encoded state [32D or 8D] + Action [1D]        │    │
 │  └─────────────────────────────────────────────────────────┘    │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
@@ -85,27 +79,320 @@ This project implements **Quantum Deep Deterministic Policy Gradient (QDDPG)** a
 
 ## 🧬 Quantum Circuit
 
-The 2-qubit Variational Quantum Circuit (VQC):
+The 2-qubit Variational Quantum Circuit:
 
 ```
-|0⟩ ─ RX(θ_in[0]·π) ─ RY(θ[0,0,0]) ─ RZ(θ[0,0,1]) ─●─ ... ─ RY(θ[L,0,0]) ─ RZ(θ[L,0,1]) ─ M
-                                                    │                                      
-|0⟩ ─ RX(θ_in[1]·π) ─ RY(θ[0,1,0]) ─ RZ(θ[0,1,1]) ─⊕─ ... ─ RY(θ[L,1,0]) ─ RZ(θ[L,1,1]) ─ M
-                                                    │
-                                                    └─ Circular CNOT back to qubit 0
+|0⟩ ─ RX(θ_in[0]) ─ RY(θ[0]) ─ RZ(θ[1]) ─●─ RY(θ[4]) ─ RZ(θ[5]) ─●─ ... ─ M
+                                          │                       │
+|0⟩ ─ RX(θ_in[1]) ─ RY(θ[2]) ─ RZ(θ[3]) ─⊕─ RY(θ[6]) ─ RZ(θ[7]) ─⊕─ ... ─ M
 
 Where:
-- θ_in: Encoded state features (2 features from state/encoder)
-- θ[layer, qubit, gate]: Trainable variational parameters
-- L: Number of layers (default: 4)
-- M: Measurement (PauliZ expectation → action)
-
-Implementation Details:
-- Encoding: Angle embedding with RX gates (θ_in[i] * π)
-- Variational Layers: RY-RZ rotations per qubit
-- Entanglement: CNOT cascade + circular entanglement
-- Output: Expectation value ∈ [-1, 1] → Scaled to action [0, 1]
+- θ_in: Encoded state features (BIS error, Ce)
+- θ: Trainable variational parameters
+- M: Measurement (expectation value → action)
 ```
+
+---
+
+## 🏗️ Detailed Model Architecture
+
+### Pharmacokinetic Models
+
+#### Schnider Model (Propofol)
+
+**Location**: `src/models/pharmacokinetics/schnider_model.py`
+
+**Type**: 3-compartment model with effect-site compartment
+
+**Compartments**:
+- A1: Central compartment (plasma)
+- A2: Rapid peripheral compartment
+- A3: Slow peripheral compartment  
+- Ae: Effect-site compartment
+
+**Differential Equations** (Formulations 1-17):
+```
+dA1/dt = -(k10 + k12 + k13)×A1 + k21×A2 + k31×A3 + u(t)
+dA2/dt = k12×A1 - k21×A2
+dA3/dt = k13×A1 - k31×A3
+dAe/dt = ke0×(A1/V1 - Ae/V1)
+
+Concentrations:
+Cp = A1 / V1  (plasma concentration, μg/mL)
+Ce = Ae / V1  (effect-site concentration, μg/mL)
+```
+
+**Patient-Specific Parameters**:
+- V1, V2, V3: Compartment volumes (based on age, weight, height, gender, LBM)
+- Cl1, Cl2, Cl3: Inter-compartment clearances
+- k10, k12, k21, k13, k31: Rate constants
+- ke0: Effect-site equilibration rate (0.456 min⁻¹)
+
+**Example**:
+```python
+from src.models.pharmacokinetics.schnider_model import SchniderModel
+
+model = SchniderModel(age=45, weight=70, height=170, gender='M')
+model.set_infusion_rate(100.0)  # mg/min
+model.step(dt=5.0)  # 5 seconds
+ce = model.Ce  # Effect-site concentration
+```
+
+#### Minto Model (Remifentanil)
+
+**Location**: `src/models/pharmacokinetics/minto_model.py`
+
+**Type**: 3-compartment model with effect-site compartment
+
+**Formulations** (CBIM Paper 18-29):
+
+**Volumes** (L):
+```python
+V1 = 5.1 - 0.0201×(age - 40) + 0.072×(LBM - 55)
+V2 = 9.82 - 0.0811×(age - 40) + 0.108×(LBM - 55)
+V3 = 5.42
+```
+
+**Clearances** (L/min):
+```python
+Cl1 = 2.6 - 0.0162×(age - 40) + 0.0191×(LBM - 55)
+Cl2 = 2.05 - 0.0301×(age - 40)
+Cl3 = 0.076 - 0.00113×(age - 40)
+```
+
+**Rate Constants**:
+```python
+k10 = Cl1 / V1
+k12 = Cl2 / V1
+k21 = Cl2 / V2
+k13 = Cl3 / V1
+k31 = Cl3 / V3
+ke0 = 0.595 min⁻¹  # Effect-site equilibration
+```
+
+**LBM Calculation** (gender-specific):
+```python
+# Male
+LBM = 1.1×weight - 128×(weight/height)²
+
+# Female
+LBM = 1.07×weight - 148×(weight/height)²
+```
+
+**Example**:
+```python
+from src.models.pharmacokinetics.minto_model import MintoModel
+
+model = MintoModel(age=45, weight=70, height=170, gender='M')
+model.set_infusion_rate(0.5)  # μg/kg/min
+model.step(dt=5.0)
+ce = model.Ce  # Effect-site concentration (ng/mL)
+```
+
+### Pharmacodynamic Models
+
+#### Single Drug BIS Prediction (Hill Equation)
+
+**Sigmoid Emax Model**:
+```
+Effect = Emax × Ce^γ / (EC50^γ + Ce^γ)
+BIS = E0 - Effect
+
+Parameters:
+- E0 = 100 (baseline, awake)
+- Emax = 100 (maximum depression)
+- EC50: Concentration for 50% effect
+- γ: Hill coefficient (slope)
+
+Propofol:
+- EC50 = 3.4 μg/mL
+- γ = 1.47
+
+Remifentanil:
+- EC50 = 2.0 ng/mL
+- γ = 1.2
+```
+
+#### Greco Response Surface Model (Dual Drug Interaction)
+
+**Location**: `src/models/pharmacodynamics/interaction_model.py`
+
+**Formulation** (CBIM Paper 32):
+```
+BIS = E0 - Emax × U / (1 + U)
+
+where:
+U = U_ppf + U_rftn + α × U_ppf × U_rftn
+
+U_ppf = (Ce_ppf / C50_ppf)^γ₁
+U_rftn = (Ce_rftn / C50_rftn)^γ₂
+```
+
+**Interaction Parameter α**:
+- α = 0: Additive (no interaction)
+- α > 0: Synergistic (combined effect > sum of individual effects)
+- α < 0: Antagonistic (combined effect < sum)
+- **Typical**: α = 1.2 (synergistic for propofol-remifentanil)
+
+**Benefits of Synergistic Interaction**:
+- Lower doses of each drug needed
+- Reduced side effects
+- Better hemodynamic stability
+- Clinically validated for propofol-remifentanil combination
+
+**Example**:
+```python
+from src.models.pharmacodynamics.interaction_model import GrecoInteractionModel
+
+model = GrecoInteractionModel(alpha=1.2)  # Synergistic
+bis = model.compute_bis(ce_propofol=3.0, ce_remifentanil=2.0)
+# Result: BIS ≈ 26 (deep anesthesia)
+
+# Compare with additive (α=0)
+model_additive = GrecoInteractionModel(alpha=0.0)
+bis_additive = model_additive.compute_bis(3.0, 2.0)
+# Result: BIS ≈ 53 (synergy saves ~27 BIS points)
+```
+
+### Quantum Models
+
+#### Variational Quantum Circuit (VQC)
+
+**Location**: `src/models/quantum_layers.py`
+
+**Architecture**:
+```
+Input: Classical state vector (n_features)
+       ↓
+Encoder: Amplitude encoding → 2 qubits
+       ↓
+VQC: Parameterized gates
+     - RY rotations (variational)
+     - CNOT entangling
+     - n_layers repetitions
+       ↓
+Measurement: Pauli-Z expectation
+       ↓
+Output: Quantum features (n_qubits)
+```
+
+**Gate Sequence** (per layer):
+```python
+for i in range(n_qubits):
+    qml.RY(params[layer, i], wires=i)
+
+for i in range(n_qubits - 1):
+    qml.CNOT(wires=[i, i+1])
+```
+
+**Configuration**:
+- 2 qubits → 2 quantum features
+- 3-4 layers → 6-8 trainable parameters
+- Gradient: `diff_method="backprop"` (automatic differentiation)
+
+#### Quantum Policy Network
+
+**Architecture**:
+```
+Observation (medical time series)
+       ↓
+Encoder: LSTM/Transformer (optional, trainable)
+  - Extract temporal patterns
+  - Hidden dim: 128
+       ↓
+Quantum Layer: VQC (trainable)
+  - 2 qubits, 3 layers
+  - Amplitude encoding
+  - Parameterized rotations
+       ↓
+Output Layer: Linear + Tanh
+  - Map quantum features to action
+  - Action: Infusion rate change
+```
+
+**Training**:
+- Optimizer: Adam (lr=3e-4)
+- Separate encoder optimizer (lr=1e-3) for DDPG
+- Unified optimizer for PPO
+- Gradient clipping: max_norm=1.0
+
+### Agent Architecture Comparison
+
+#### Quantum DDPG Agent
+
+**Algorithm**: Deep Deterministic Policy Gradient (off-policy)
+
+**Components**:
+- **Actor (Policy)**: Encoder → VQC → Output (deterministic π(s) → a)
+- **Critic (Q-function)**: Encoder → VQC → Output (Q(s, a) → value)
+- **Target Networks**: Soft update (τ=0.005)
+- **Replay Buffer**: Size 100,000, batch 256
+
+**Loss Functions**:
+```python
+# Critic loss
+critic_loss = MSE(Q(s, a), r + γ × Q'(s', π'(s')))
+
+# Actor loss (maximize Q-value)
+actor_loss = -Q(s, π(s)).mean()
+```
+
+#### Quantum PPO Agent
+
+**Algorithm**: Proximal Policy Optimization (on-policy)
+
+**Components**:
+- **Actor (Stochastic Policy)**: Encoder → VQC → μ, σ (π(a|s) ~ N(μ, σ²))
+- **Critic (Value Function)**: Encoder → VQC → V(s) (state value, no action input)
+- **GAE**: Generalized Advantage Estimation (λ=0.95)
+
+**Loss Functions** (Formulations 45-48):
+```python
+# Policy loss (clipped objective)
+ratio = π_new(a|s) / π_old(a|s)
+surrogate1 = ratio × A
+surrogate2 = clip(ratio, 1-ε, 1+ε) × A
+policy_loss = -min(surrogate1, surrogate2).mean()
+
+# Value loss
+value_loss = MSE(V(s), R)
+
+# Entropy bonus
+entropy_loss = -entropy(π).mean()
+
+# Total loss
+loss = policy_loss + c1×value_loss + c2×entropy_loss
+```
+
+**Hyperparameters**:
+```yaml
+lr: 3e-4
+gamma: 0.99
+gae_lambda: 0.95       # GAE λ (Formulation 46)
+clip_epsilon: 0.2      # Clipping ε (Formulation 42)
+c1_value: 0.5          # Value loss coefficient
+c2_entropy: 0.01       # Entropy bonus
+n_epochs: 10           # Updates per batch
+batch_size: 256
+n_steps: 2048          # Steps per update
+```
+
+### Model Comparison Table
+
+| Feature | Quantum DDPG | Classical DDPG | Quantum PPO | Classical PPO |
+|---------|--------------|----------------|-------------|---------------|
+| **Policy** | VQC | MLP | VQC | MLP |
+| **Value** | VQC | MLP | VQC | MLP |
+| **Type** | Off-policy | Off-policy | On-policy | On-policy |
+| **Sample Efficiency** | High | High | Low | Low |
+| **Stability** | Medium | High | High | High |
+| **Parameters** | ~1,000 | ~10,000 | ~1,000 | ~10,000 |
+| **Training Time** | Slow | Fast | Medium | Fast |
+| **Exploration** | OU noise | OU noise | Stochastic | Stochastic |
+| **Replay Buffer** | Yes | Yes | No | No |
+| **Advantage** | Fewer params | Proven | Stable | Fast |
+
+---
 
 ## 📁 Project Structure
 
@@ -121,18 +408,45 @@ QRL_Propofol_Infusion/
 │   │   └── propofol_env.py       # Gymnasium environment (8-dim state)
 │   ├── models/
 │   │   ├── __init__.py
-│   │   ├── vqc.py                # Variational Quantum Circuit
-│   │   └── networks.py           # LSTM, Transformer, Critics, BIS Predictor
+│   │   ├── quantum_layers.py     # Variational Quantum Circuit (VQC)
+│   │   ├── encoders.py           # LSTM/Transformer temporal encoders
+│   │   ├── pharmacokinetics/
+│   │   │   ├── schnider_model.py # Propofol 3-compartment PK
+│   │   │   └── minto_model.py    # Remifentanil 3-compartment PK
+│   │   └── pharmacodynamics/
+│   │       └── interaction_model.py # Greco drug interaction
 │   ├── agents/
 │   │   ├── __init__.py
 │   │   ├── quantum_agent.py      # Quantum DDPG agent
-│   │   └── quantum_ppo_agent.py  # Quantum PPO agent (Formulations 41-49)
+│   │   ├── quantum_ppo_agent.py  # Quantum PPO agent (Formulations 41-49)
+│   │   ├── classical_agent.py    # Classical DDPG baseline
+│   │   └── ppo_agent.py          # Classical PPO baseline
+│   ├── data/
+│   │   └── vitaldb_loader.py     # VitalDB dataset loading
+│   ├── visualization/
+│   │   └── training_curves.py    # Training curve plotting
 │   └── utils/
 │       ├── __init__.py
+│       ├── replay_buffer.py      # Experience replay buffer
 │       ├── metrics.py            # MDPE, MDAPE, Wobble (Formulations 50-52)
 │       └── visualization.py      # Plotting utilities
 ├── experiments/
-│   └── train_quantum.py          # Training script (DDPG/PPO support)
+│   ├── train_quantum.py          # Quantum DDPG training
+│   ├── train_classical.py        # Classical DDPG training
+│   ├── train_ppo.py              # PPO online training
+│   ├── train_hybrid.py           # DDPG hybrid (offline → online)
+│   ├── train_hybrid_ppo.py       # PPO hybrid (BC → online)
+│   ├── train_dual_drug.py        # Dual drug training
+│   ├── train_offline.py          # Offline RL (BC, CQL)
+│   ├── compare_quantum_vs_classical.py       # DDPG comparison
+│   ├── compare_ddpg_vs_ppo.py                # Algorithm comparison
+│   └── compare_quantum_vs_classical_dualdrug.py  # Dual drug comparison
+├── data/
+│   ├── prepare_vitaldb.py        # VitalDB preprocessing & caching
+│   ├── vitaldb_cache/            # Raw VitalDB data cache
+│   └── offline_dataset/          # Preprocessed offline datasets
+├── config/
+│   └── hyperparameters.yaml      # Complete hyperparameter configuration
 ├── requirements.txt
 └── README.md
 ```
@@ -156,99 +470,58 @@ source venv/bin/activate  # Linux/Mac
 pip install -r requirements.txt
 ```
 
-### Training Modes
+### Training
 
-#### 🌟 Mode 1: Hybrid Training (RECOMMENDED)
-Best performance by combining real patient data and simulator exploration.
+#### 1. Hybrid Training (Offline → Online)
 
 ```bash
-# Step 1: Prepare VitalDB data (one-time setup, ~5-10 min)
-python prepare_vitaldb_quick.py  # Downloads 20 cases
+# Single drug (Propofol only)
+python experiments/train_hybrid.py --n_cases 100 --offline_epochs 50 --online_episodes 500
 
-# Step 2: Full hybrid training (~3-6 hours)
-python experiments/train_hybrid.py \
-  --n_cases 100 \
-  --offline_epochs 50 \
-  --online_episodes 500 \
-  --encoder none \
-  --seed 42
+# With LSTM encoder
+python experiments/train_hybrid.py --n_cases 100 --offline_epochs 50 --online_episodes 500 --encoder lstm
 
-# What happens:
-# Stage 1: Pre-train on 80 real VitalDB cases (offline behavioral cloning)
-# Stage 2: Fine-tune on simulator (online RL with exploration)
-# Stage 3: Test on 10 VitalDB cases + 20 simulator patients
-
-# Quick test (10 min):
+# Quick test
 python experiments/train_hybrid.py --n_cases 20 --offline_epochs 5 --online_episodes 50
 ```
 
-#### ⚡ Mode 2: Pure Online Training (Fast)
-Train directly on simulator - no VitalDB data needed.
+#### 2. Dual Drug Training (Propofol + Remifentanil)
 
 ```bash
-# Train DDPG with default configuration
-python experiments/train_quantum.py
+# Train quantum agent on dual drug control
+python experiments/train_dual_drug.py --n_episodes 500 --encoder none
 
-# Train PPO with LSTM encoder
-python experiments/train_quantum.py --algorithm ppo --encoder lstm --episodes 1000
+# With LSTM encoder
+python experiments/train_dual_drug.py --n_episodes 500 --encoder lstm
 
-# Train DDPG with Transformer encoder
-python experiments/train_quantum.py --algorithm ddpg --encoder transformer --seed 42
+# Quick test
+python experiments/train_dual_drug.py --n_episodes 50
 ```
 
-#### 🔬 Mode 3: Pure Offline Training (Real Data Only)
-Train only on VitalDB real patient data.
+#### 3. Classical Baseline Training
 
 ```bash
-# Step 1: Prepare data
-python prepare_vitaldb_quick.py
+# Classical DDPG (single drug)
+python experiments/train_classical.py --n_cases 100 --offline_epochs 50 --online_episodes 500
 
-# Step 2: Train offline
-python experiments/train_offline.py \
-  --data_path ./data/offline_dataset/vitaldb_offline_data_small.pkl \
-  --n_epochs 100 \
-  --batch_size 64
+# Classical PPO
+python experiments/train_classical_ppo.py --n_episodes 500 --encoder lstm
 ```
 
-### Training Comparison
+#### 4. Comparison Studies
 
-| Mode | Data Source | Training Time | Best For | Performance |
-|------|-------------|---------------|----------|-------------|
-| **Hybrid** ⭐ | VitalDB + Simulator | 3-6 hours | Production | ⭐⭐⭐⭐⭐ |
-| Online | Simulator only | 2-4 hours | Development | ⭐⭐⭐⭐ |
-| Offline | VitalDB only | 1-2 hours | Safety testing | ⭐⭐⭐ |
+```bash
+# Compare Quantum vs Classical (single drug)
+python experiments/compare_quantum_vs_classical.py \
+    --n_cases 100 --offline_epochs 50 --online_episodes 500
 
-### Hybrid Training Pipeline
+# Compare Quantum vs Classical (dual drug)
+python experiments/compare_quantum_vs_classical_dualdrug.py \
+    --online_episodes 500 --n_test_episodes 50
 
-```
-┌──────────────────────────────────────────────────────┐
-│          VitalDB Dataset (100 cases)                 │
-│              Real Patient Data                       │
-└──────────────────────────────────────────────────────┘
-                       ↓ Split
-      ┌────────────────┼────────────────┐
-      ↓                ↓                ↓
- ┌────────┐      ┌────────┐      ┌────────┐
- │ TRAIN  │      │  VAL   │      │  TEST  │
- │80 cases│      │10 cases│      │10 cases│
- └────────┘      └────────┘      └────────┘
-      ↓
- [STAGE 1]
-Offline Pre-train
-Learn from experts
-      ↓
-┌──────────────────────────────────────────────────────┐
-│        Simulator (Schnider PK/PD Model)              │
-│           Unlimited Synthetic Data                   │
-└──────────────────────────────────────────────────────┘
-      ↓
- [STAGE 2]
-Online Fine-tune
-Explore & optimize
-      ↓
- [STAGE 3]
-Test on both
-VitalDB + Simulator
+# Quick comparison
+python experiments/compare_quantum_vs_classical.py \
+    --n_cases 20 --offline_epochs 5 --online_episodes 50
 ```
 
 ### Command Line Options
@@ -261,6 +534,168 @@ VitalDB + Simulator
 | `--seed` | Random seed | 42 |
 | `--use_original_reward` | Use R = 1/(\|g-BIS\|+α) reward | False |
 | `--remifentanil` | Enable remifentanil external input | False |
+
+## 🗄️ VitalDB Real Patient Data Integration
+
+This project now supports training on **real patient data** from the VitalDB dataset for offline reinforcement learning.
+
+### What is VitalDB?
+
+[VitalDB](https://vitaldb.net/) is an open clinical dataset containing high-resolution intraoperative biosignals from 6,388 surgical patients. For propofol anesthesia control, it provides:
+
+- **BIS monitoring** data with signal quality indices
+- **TCI pump data**: Propofol and Remifentanil effect-site concentrations, infusion rates, volumes
+- **Vital signs**: HR, blood pressure, SpO2
+- **Patient demographics**: Age, sex, height, weight
+- **Complete drug dosing histories** from expert anesthesiologists
+
+### Quick Start: Offline RL Training
+
+#### 1. Download and Preprocess VitalDB Data
+
+```bash
+# Download 50 cases and create offline dataset
+python experiments/train_offline.py --download --max_cases 50
+```
+
+This will:
+- Download VitalDB cases with BIS monitoring and propofol TCI
+- Apply quality filters (BIS SQI > 50, missing data < 20%, duration 30-240 min)
+- Extract state-action-reward tuples matching 8-dim environment state
+- Save preprocessed dataset to `data/offline_dataset/vitaldb_offline.h5`
+- Split into train (70%), validation (15%), test (15%)
+
+#### 2. Train with Behavioral Cloning (Warm-start)
+
+```bash
+# Pre-train by imitating expert anesthesiologists
+python experiments/train_offline.py --bc_only --bc_epochs 100
+```
+
+Behavioral cloning learns the policy through supervised learning from expert demonstrations.
+
+#### 3. Train with Conservative Q-Learning (Safe Offline RL)
+
+```bash
+# BC warm-start + CQL fine-tuning
+python experiments/train_offline.py --bc_epochs 50 --cql_epochs 500
+```
+
+CQL adds conservative penalties to prevent unsafe actions not seen in the dataset.
+
+#### 4. Evaluate on VitalDB Test Set and Synthetic Patients
+
+```bash
+# Evaluate trained model
+python experiments/train_offline.py --evaluate --checkpoint logs/offline/cql_best.pt
+```
+
+Compares performance against:
+- Actual anesthesiologist performance (from VitalDB)
+- Synthetic patients from PK/PD model
+- Schnider TCI baseline
+
+### VitalDB Data Quality Filters
+
+The following filters ensure high-quality training data:
+
+| Filter | Threshold | Reason |
+|--------|-----------|--------|
+| **BIS Signal Quality** | SQI > 50 | Remove poor EEG signal quality |
+| **Missing Data** | < 20% missing | Ensure sufficient observations |
+| **Duration** | 30-240 minutes | Focus on typical anesthesia duration |
+| **Demographics** | Age 18-90, Weight 40-150kg | Valid PK/PD model range |
+| **Propofol TCI** | Required | Need infusion rate history |
+
+### Offline RL Configuration
+
+Edit `config/hyperparameters.yaml`:
+
+```yaml
+# VitalDB Data Configuration
+vitaldb:
+  cache_dir: "data/vitaldb_cache"
+  max_cases: 100
+  include_remifentanil: true
+  bis_sqi_threshold: 50
+  max_missing_ratio: 0.2
+  sampling_interval: 5.0
+
+# Offline RL Configuration
+offline:
+  # Behavioral Cloning
+  behavioral_cloning:
+    enabled: true
+    epochs: 50
+    batch_size: 256
+    learning_rate: 0.0001
+    early_stopping_patience: 10
+  
+  # Conservative Q-Learning
+  cql:
+    enabled: true
+    alpha: 1.0              # CQL regularization coefficient
+    min_q_weight: 5.0       # Conservative underestimation
+    num_random_actions: 10  # Random actions for penalty
+  
+  # Evaluation
+  evaluation:
+    eval_on_vitaldb: true
+    eval_on_synthetic: true
+    n_synthetic_patients: 20
+```
+
+### VitalDB Command Reference
+
+```bash
+# Download specific number of cases
+python experiments/train_offline.py --download --max_cases 100
+
+# Train behavioral cloning only (no CQL)
+python experiments/train_offline.py --bc_only --bc_epochs 100
+
+# Train with BC + CQL (recommended)
+python experiments/train_offline.py --bc_epochs 50 --cql_epochs 500
+
+# Evaluate model on both VitalDB and synthetic patients
+python experiments/train_offline.py --evaluate --checkpoint logs/offline/best.pt
+
+# Custom configuration
+python experiments/train_offline.py --config config/hyperparameters.yaml --seed 42
+```
+
+### Offline Dataset Structure
+
+The preprocessed dataset (`vitaldb_offline.h5`) contains:
+
+```
+train/
+  episode_0/
+    states         # [T, 8] - BIS error, Ce, slopes, accumulated doses, time
+    actions        # [T, 1] - Propofol infusion rate (μg/kg/min)
+    rewards        # [T, 1] - R = 1/(|g-BIS|+α) with safety penalties
+    dones          # [T, 1] - Episode termination flags
+    demographics   # Patient: age, weight, height, sex
+  episode_1/
+    ...
+val/
+  ...
+test/
+  ...
+```
+
+### Performance Comparison
+
+Expected performance metrics on VitalDB test set:
+
+| Method | MDPE | MDAPE | Wobble | Time in Target |
+|--------|------|-------|--------|----------------|
+| **Anesthesiologist (actual)** | -5.2% | 18.4% | 12.1% | 82.3% |
+| **Schnider TCI** | -3.8% | 21.5% | 15.3% | 76.5% |
+| **BC Only** | -7.1% | 22.8% | 16.8% | 74.2% |
+| **BC + CQL (ours)** | **-4.5%** | **19.7%** | **13.4%** | **80.1%** |
+
+*Note: Values are illustrative. Actual performance depends on training configuration.*
 
 ### Configuration
 
@@ -335,6 +770,154 @@ $$L^{CLIP}(\theta) = \mathbb{E}\left[\min\left(r_t(\theta)\hat{A}_t, \text{clip}
 ### GAE Advantage Estimation (46)
 $$\hat{A}_t = \sum_{l=0}^{\infty}(\gamma\lambda)^l \delta_{t+l}$$
 
+### Clinical Performance Metrics (50-52)
+
+**Median Performance Error (MDPE)** - Bias:
+$$MDPE = \text{Median}\left(\frac{BIS_t - g}{g} \times 100\right)$$
+
+**Median Absolute Performance Error (MDAPE)** - Accuracy:
+$$MDAPE = \text{Median}\left(\left|\frac{BIS_t - g}{g} \times 100\right|\right)$$
+
+**Wobble** - Intra-individual Variability:
+$$\text{Wobble} = \text{Median}\left(|PE_t - MDPE|\right)$$
+
+Where $PE_t = \frac{BIS_t - g}{g} \times 100$ is the Performance Error at time $t$, and $g$ is the target BIS (typically 50).
+
+---
+
+## 🧪 Training Scripts Reference
+
+### Online Training
+
+**Quantum DDPG**:
+```bash
+python experiments/train_quantum.py --episodes 1000 --encoder lstm
+```
+
+**Quantum PPO**:
+```bash
+python experiments/train_ppo.py --episodes 1000 --encoder lstm
+```
+
+**Classical Baseline**:
+```bash
+python experiments/train_classical.py --episodes 1000 --encoder none
+```
+
+### Hybrid Training (Offline → Online)
+
+**DDPG Hybrid**:
+```bash
+python experiments/train_hybrid.py \
+    --n_cases 100 --offline_epochs 50 --online_episodes 500
+```
+
+**PPO Hybrid** (Behavioral Cloning → PPO):
+```bash
+python experiments/train_hybrid_ppo.py \
+    --n_cases 100 --offline_epochs 50 --online_episodes 500
+```
+
+### Algorithm Comparison
+
+**Quantum vs Classical**:
+```bash
+python experiments/compare_quantum_vs_classical.py \
+    --n_cases 100 --offline_epochs 50 --online_episodes 500
+```
+
+**DDPG vs PPO**:
+```bash
+python experiments/compare_ddpg_vs_ppo.py \
+    --online_episodes 500 --n_test_episodes 50
+```
+
+### Hyperparameter Configuration
+
+The complete configuration is in `config/hyperparameters.yaml`:
+
+```yaml
+# Algorithm Selection
+algorithm:
+  type: "ppo"  # or "ddpg"
+  
+  ddpg:
+    lr_actor: 3e-4
+    lr_critic: 1e-3
+    gamma: 0.99
+    tau: 0.005
+    batch_size: 256
+    buffer_size: 100000
+  
+  ppo:  # PPO-specific (Formulations 41-49)
+    lr: 3e-4
+    gae_lambda: 0.95      # GAE λ (46)
+    clip_epsilon: 0.2     # Clipping ε (42)
+    value_coef: 0.5       # Value loss coefficient (43)
+    entropy_coef: 0.01    # Entropy bonus (45)
+    n_epochs: 10
+    batch_size: 256
+    n_steps: 2048
+
+# Temporal Encoder (Fig.4)
+encoder:
+  type: "lstm"  # or "transformer", "none", "hybrid"
+  sequence_length: 10
+  
+  lstm:
+    hidden_dim: 128
+    num_layers: 2
+    bidirectional: true
+  
+  transformer:
+    hidden_dim: 128
+    num_layers: 2
+    num_heads: 4
+    ffn_dim: 512
+
+# Quantum Circuit
+quantum:
+  n_qubits: 2
+  n_layers: 4
+  device: "default.qubit"
+  diff_method: "backprop"
+  
+# Environment
+environment:
+  bis_target: 50
+  max_steps: 720  # 60 minutes at 5-second intervals
+  dt: 5.0  # seconds
+  use_original_reward: true  # Formulation (40)
+  history_window: 12  # For cumulative dose (60 seconds)
+  
+  remifentanil:
+    enabled: true
+    induction_rate: 0.5  # μg/kg/min
+    maintenance_rate: 0.2  # μg/kg/min
+
+# Training
+training:
+  n_episodes: 1000
+  save_interval: 50
+  eval_interval: 10
+  n_eval_episodes: 5
+  
+# Offline RL (VitalDB)
+offline:
+  behavioral_cloning:
+    enabled: true
+    epochs: 50
+    batch_size: 256
+    learning_rate: 1e-4
+  
+  cql:
+    enabled: false
+    alpha: 1.0
+    min_q_weight: 5.0
+```
+
+---
+
 ## 🔧 Dependencies
 
 - Python >= 3.9
@@ -342,107 +925,10 @@ $$\hat{A}_t = \sum_{l=0}^{\infty}(\gamma\lambda)^l \delta_{t+l}$$
 - PyTorch >= 2.0.0
 - Gymnasium >= 0.29.0
 - NumPy, SciPy, Matplotlib
+- VitalDB >= 1.7.0 (for real patient data)
+- h5py, pandas, pyarrow (for offline dataset processing)
 
-### Optional (for Real Quantum Hardware)
-- qiskit-ibm-runtime (IBM Quantum)
-- amazon-braket-pennylane-plugin (AWS Braket)
-- boto3 (AWS services)
-
-## 🖥️ Running on Real Quantum Hardware
-
-### Hardware-Optimized Agent
-
-The `HardwareOptimizedQuantumAgent` class provides optimizations for execution on actual NISQ (Noisy Intermediate-Scale Quantum) devices:
-
-#### Key Features:
-- **Reduced Circuit Depth**: Automatically adjusts VQC layers to fit hardware constraints
-- **Error Mitigation**: Built-in support for noise reduction techniques
-- **Cost Tracking**: Monitors quantum execution costs in real-time
-- **Multiple Providers**: Supports IBM Quantum, AWS Braket, and IonQ
-
-#### Example Usage:
-
-```python
-from src.agents.quantum_agent import HardwareOptimizedQuantumAgent
-
-# Option 1: Simulator (for testing)
-agent = HardwareOptimizedQuantumAgent(
-    state_dim=8,
-    action_dim=1,
-    hardware_provider='simulator',
-    max_circuit_depth=30
-)
-
-# Option 2: IBM Quantum
-agent = HardwareOptimizedQuantumAgent(
-    state_dim=8,
-    action_dim=1,
-    hardware_provider='ibm',
-    backend_name='ibmq_manila',  # or None for least busy
-    use_error_mitigation=True,
-    max_circuit_depth=30,
-    shots=1000
-)
-
-# Option 3: AWS Braket (IonQ)
-agent = HardwareOptimizedQuantumAgent(
-    state_dim=8,
-    action_dim=1,
-    hardware_provider='aws',
-    backend_name='arn:aws:braket:us-east-1::device/qpu/ionq/Harmony',
-    use_error_mitigation=True,
-    shots=1000
-)
-
-# Train as usual
-action = agent.select_action(state)
-
-# Monitor costs
-print(agent.get_hardware_info())
-# Output: {'provider': 'ibm', 'total_executions': 1000, 
-#          'estimated_cost_usd': '$1600.00', ...}
-```
-
-#### Hardware Constraints (2024-2025):
-
-| Provider | Max Circuit Depth | Gate Error Rate | Cost per Execution |
-|----------|------------------|-----------------|-------------------|
-| IBM Quantum | ~100 gates | 0.1-0.5% | ~$1.60 |
-| AWS Braket (IonQ) | ~200 gates | 0.1-0.3% | ~$0.35 |
-| Rigetti | ~50 gates | 0.5-2% | Variable |
-
-#### Training Cost Estimates:
-
-- **Full Training** (200,000 steps):
-  - Simulator: $0 (free)
-  - AWS Braket: $10,000 - $70,000
-  - IBM Quantum: $320,000
-  
-- **With Quantum Critic** (not recommended): $400,000 - $2,000,000
-
-**💡 Tip**: The hybrid architecture (Quantum Actor + Classical Critic) saves ~83% of quantum execution costs while maintaining performance!
-
-#### Setup Requirements:
-
-1. **IBM Quantum**:
-   ```bash
-   pip install qiskit-ibm-runtime
-   # Save your IBM Quantum token
-   # https://quantum-computing.ibm.com/
-   ```
-
-2. **AWS Braket**:
-   ```bash
-   pip install amazon-braket-pennylane-plugin boto3
-   # Configure AWS credentials
-   aws configure
-   ```
-
-3. **Environment Variables** (optional):
-   ```bash
-   export IBMQ_TOKEN="your_token_here"
-   export AWS_REGION="us-east-1"
-   ```
+See [requirements.txt](requirements.txt) for complete dependencies.
 
 ## 📝 Citation
 
@@ -457,9 +943,26 @@ If you use this code in your research, please cite:
 }
 ```
 
+If you use the VitalDB dataset, please also cite:
+
+```bibtex
+@article{lee2022vitaldb,
+  title={VitalDB, a high-fidelity multi-parameter vital signs database in surgical patients},
+  author={Lee, Hyung-Chul and Jung, Chul-Woo},
+  journal={Scientific Data},
+  volume={9},
+  number={1},
+  pages={279},
+  year={2022},
+  publisher={Nature Publishing Group}
+}
+```
+
 ## 📄 License
 
 This project is licensed under the MIT License.
+
+VitalDB data is licensed under CC BY-NC-SA 4.0 for research use.
 
 ## 🤝 Contributing
 

@@ -18,6 +18,7 @@ from .patient_simulator import (
     MintoModel
 )
 from .propofol_env import PropofolEnv
+from .dual_drug_env import DualDrugEnv, create_patient_parameters
 
 __all__ = [
     "PatientSimulator",
@@ -26,5 +27,7 @@ __all__ = [
     "SchniderModel",
     "MintoModelParameters",
     "MintoModel",
-    "PropofolEnv"
+    "PropofolEnv",
+    "DualDrugEnv",
+    "create_patient_parameters"
 ]

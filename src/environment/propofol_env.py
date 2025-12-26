@@ -686,6 +686,29 @@ class PropofolEnv(gym.Env):
         )
         time_in_target = np.mean(in_target) * 100
         
+        # Induction Time: Time to reach target range (BIS 45-55) from awake state
+        # Find first time BIS enters target range
+        induction_time = None
+        for i, bis_val in enumerate(bis_array):
+            if self.bis_min <= bis_val <= self.bis_max:
+                induction_time = i * self.dt / 60.0  # Convert to minutes
+                break
+        
+        # Recovery Time: Time to return to awake state (BIS > 80) from last step
+        # This is typically measured when stopping infusion at end of surgery
+        # For now, we check if BIS remains low or starts to recover
+        recovery_time = None
+        recovery_threshold = 80
+        if bis_array[-1] < recovery_threshold:
+            # Still anesthetized at end of episode
+            recovery_time = None  # Would need to simulate stopping infusion
+        else:
+            # Find when BIS rose above recovery threshold
+            for i in reversed(range(len(bis_array))):
+                if bis_array[i] < recovery_threshold:
+                    recovery_time = (len(bis_array) - i - 1) * self.dt / 60.0  # Minutes
+                    break
+        
         # Total reward
         total_reward = sum(self.episode_history['reward'])
         
@@ -693,11 +716,19 @@ class PropofolEnv(gym.Env):
         mean_dose_ppf = np.mean(self.episode_history['dose_ppf'])
         mean_dose_rftn = np.mean(self.episode_history['dose_rftn'])
         
+        # Performance Error statistics
+        pe_mean = np.mean(pe)
+        pe_std = np.std(pe)
+        
         return {
-            'mdpe': mdpe,
-            'mdape': mdape,
-            'wobble': wobble,
-            'time_in_target': time_in_target,
+            'mdpe': mdpe,                      # Formulation (51)
+            'mdape': mdape,                    # Formulation (52)
+            'wobble': wobble,                  # Intra-individual variability
+            'time_in_target': time_in_target,  # % time in BIS 45-55
+            'induction_time': induction_time,  # Minutes to reach target
+            'recovery_time': recovery_time,    # Minutes to wake up (if applicable)
+            'pe_mean': pe_mean,                # Mean performance error
+            'pe_std': pe_std,                  # PE variability
             'total_reward': total_reward,
             'mean_dose_ppf': mean_dose_ppf,
             'mean_dose_rftn': mean_dose_rftn,

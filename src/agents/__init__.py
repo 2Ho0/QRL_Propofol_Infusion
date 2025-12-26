@@ -30,10 +30,12 @@ from .quantum_ppo_agent import (
     QuantumPPOAgent,
     RolloutBuffer
 )
+from .classical_ppo_agent import ClassicalPPOAgent
 
 __all__ = [
     "QuantumDDPGAgent", 
     "QuantumPPOAgent",
+    "ClassicalPPOAgent",
     "ReplayBuffer", 
     "SequenceReplayBuffer",
     "RolloutBuffer",

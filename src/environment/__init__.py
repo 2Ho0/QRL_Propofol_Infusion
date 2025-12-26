@@ -3,31 +3,34 @@ Environment module for Propofol Infusion Control
 =================================================
 
 Contains:
-    - PatientSimulator: PK/PD model for propofol pharmacokinetics/pharmacodynamics
+    - PatientSimulator: Integrated PK/PD simulator for propofol+remifentanil
     - PropofolEnv: Gymnasium-compatible environment for RL training
-    - SchniderModel: Schnider PK/PD model for Propofol (Table A.4: h_1 to h_17)
-    - MintoModel: Minto PK/PD model for Remifentanil (Table A.4: f_1 to f_18)
+    - DualDrugEnv: Dual drug (propofol+remifentanil) environment
+
+Note: PK/PD models (SchniderModel, MintoModel) are now in models.pharmacokinetics
 """
 
-from .patient_simulator import (
-    PatientSimulator,
-    PatientParameters,
-    SchniderModelParameters,
-    SchniderModel,
-    MintoModelParameters,
-    MintoModel
-)
+from .patient_simulator import PatientSimulator
 from .propofol_env import PropofolEnv
 from .dual_drug_env import DualDrugEnv, create_patient_parameters
+
+# Re-export from pharmacokinetics module for backward compatibility
+from models.pharmacokinetics import (
+    PatientParameters,
+    SchniderModel,
+    SchniderParameters,
+    MintoModel,
+    MintoParameters
+)
 
 __all__ = [
     "PatientSimulator",
     "PatientParameters",
-    "SchniderModelParameters",
+    "SchniderParameters",  # Updated name from SchniderModelParameters
     "SchniderModel",
-    "MintoModelParameters",
+    "MintoParameters",  # Updated name from MintoModelParameters
     "MintoModel",
     "PropofolEnv",
     "DualDrugEnv",
-    "create_patient_parameters"
+    "create_patient_parameters",
 ]

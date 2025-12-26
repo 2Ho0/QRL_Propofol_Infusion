@@ -53,6 +53,8 @@ import numpy as np
 from typing import Optional, Tuple, Dict
 from dataclasses import dataclass
 
+from .base import BasePKModel, PatientParameters, validate_patient_parameters
+
 
 @dataclass
 class MintoParameters:
@@ -89,7 +91,7 @@ class MintoParameters:
     gamma: float  # Hill coefficient
 
 
-class MintoModel:
+class MintoModel(BasePKModel):
     """
     Minto 3-compartment pharmacokinetic model for remifentanil.
     
@@ -115,14 +117,19 @@ class MintoModel:
     >>> for _ in range(60):  # Simulate 60 minutes
     ...     model.step(dt=1.0)  # 1-minute steps
     ...     print(f"Ce: {model.Ce:.2f} ng/mL")
+    
+    >>> # Alternative: Initialize with PatientParameters
+    >>> patient = PatientParameters(age=45, weight=70, height=170, gender='male')
+    >>> model = MintoModel(patient=patient)
     """
     
     def __init__(
         self,
-        age: float,
-        weight: float,
-        height: float,
-        gender: str,
+        age: float = None,
+        weight: float = None,
+        height: float = None,
+        gender: str = None,
+        patient: Optional[PatientParameters] = None,
         dt: float = 0.0833  # 5 seconds in minutes
     ):
         """
@@ -132,13 +139,27 @@ class MintoModel:
             age: Patient age (years), typically 18-90
             weight: Patient weight (kg), typically 40-150
             height: Patient height (cm), typically 140-200
-            gender: Patient gender ('M' or 'F')
+            gender: Patient gender ('M'/'male' or 'F'/'female')
+            patient: PatientParameters object (alternative to individual parameters)
             dt: Time step for simulation (minutes)
         """
-        self.age = age
-        self.weight = weight
-        self.height = height
-        self.gender = gender.upper()
+        # Support both interfaces: individual parameters or PatientParameters object
+        if patient is not None:
+            self.age = patient.age
+            self.weight = patient.weight
+            self.height = patient.height
+            self.gender = patient.gender_code  # Use 'M' or 'F'
+        else:
+            if age is None or weight is None or height is None or gender is None:
+                raise ValueError("Must provide either 'patient' or all of (age, weight, height, gender)")
+            self.age = age
+            self.weight = weight
+            self.height = height
+            self.gender = gender.upper() if len(gender) == 1 else ('M' if gender.lower() == 'male' else 'F')
+        
+        # Validate parameters
+        validate_patient_parameters(self.age, self.weight, self.height, self.gender)
+        
         self.dt = dt
         
         # Compute parameters
@@ -354,6 +375,100 @@ class MintoModel:
         self.A2 = max(0.0, state[1])
         self.A3 = max(0.0, state[2])
         self.Ae = max(0.0, state[3])
+    
+    def get_state_space_matrices(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Get state-space representation matrices A and B for 3-compartment model.
+        
+        ẋ = Ax + Bu where x = [C1, C2, C3] (concentrations in ng/mL)
+        
+        Returns:
+            Tuple of (A, B) matrices:
+                - A: 3x3 state transition matrix
+                - B: 3x1 input matrix (scaled for concentration units)
+        """
+        p = self.params
+        
+        # Volume ratios for converting between amounts and concentrations
+        r21 = p.V2 / p.V1
+        r31 = p.V3 / p.V1
+        r12 = p.V1 / p.V2
+        r13 = p.V1 / p.V3
+        
+        # A matrix for concentration dynamics
+        A = np.array([
+            [-(p.k10 + p.k12 + p.k13), p.k21 * r21, p.k31 * r31],
+            [p.k12 * r12, -p.k21, 0.0],
+            [p.k13 * r13, 0.0, -p.k31]
+        ])
+        
+        # B matrix (converts μg/min input to ng/mL/min concentration change)
+        # Factor of 1000 converts μg to ng
+        B = np.array([1000.0 / (p.V1 * 1000), 0.0, 0.0])  # Simplified to 1/V1
+        
+        return A, B
+    
+    def get_extended_state_space_matrices(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Get extended state-space matrices including effect-site (4-compartment).
+        
+        ẋ = Ax + Bu where x = [C1, C2, C3, Ce]
+        
+        Returns:
+            Tuple of (A_ext, B_ext) matrices:
+                - A_ext: 4x4 extended state transition matrix
+                - B_ext: 4x1 extended input matrix
+        """
+        p = self.params
+        
+        r21 = p.V2 / p.V1
+        r31 = p.V3 / p.V1
+        r12 = p.V1 / p.V2
+        r13 = p.V1 / p.V3
+        
+        # Extended A matrix with effect-site
+        A_ext = np.array([
+            [-(p.k10 + p.k12 + p.k13), p.k21 * r21, p.k31 * r31, 0.0],
+            [p.k12 * r12, -p.k21, 0.0, 0.0],
+            [p.k13 * r13, 0.0, -p.k31, 0.0],
+            [p.ke0, 0.0, 0.0, -p.ke0]
+        ])
+        
+        # Extended B matrix
+        B_ext = np.array([1000.0 / (p.V1 * 1000), 0.0, 0.0, 0.0])
+        
+        return A_ext, B_ext
+    
+    def get_rate_constants(self) -> Dict[str, float]:
+        """
+        Get all rate constants as a dictionary.
+        
+        Returns:
+            Dictionary containing k10, k12, k21, k13, k31, ke0
+        """
+        p = self.params
+        return {
+            'k10': p.k10,
+            'k12': p.k12,
+            'k21': p.k21,
+            'k13': p.k13,
+            'k31': p.k31,
+            'ke0': p.ke0
+        }
+    
+    def get_volumes(self) -> Dict[str, float]:
+        """
+        Get compartment volumes as a dictionary.
+        
+        Returns:
+            Dictionary containing V1, V2, V3
+        """
+        p = self.params
+        return {
+            'V1': p.V1,
+            'V2': p.V2,
+            'V3': p.V3
+        }
     
     def get_info(self) -> Dict:
         """Get model information and parameters."""

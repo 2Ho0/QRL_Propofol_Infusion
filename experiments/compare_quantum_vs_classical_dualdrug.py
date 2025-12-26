@@ -40,16 +40,33 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
 
-from agents.quantum_agent import QuantumDDPGAgent
-from agents.classical_agent import ClassicalDDPGAgent
-from environment.dual_drug_env import DualDrugEnv
-from environment.patient_simulator import create_patient_population
+# Use relative imports (we're in experiments/ directory)
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
+
+from src.agents.quantum_agent import QuantumDDPGAgent
+from src.agents.classical_agent import ClassicalDDPGAgent
+from src.environment.dual_drug_env import DualDrugEnv
+from src.environment.patient_simulator import create_patient_population
+from src.data.vitaldb_loader import VitalDBLoader
+from train_hybrid import stage1_offline_pretraining, stage2_online_finetuning
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description='Compare Quantum vs Classical RL for Dual Drug Control'
     )
+    
+    # VitalDB data
+    parser.add_argument('--n_cases', type=int, default=100,
+                       help='Number of VitalDB dual drug cases to load')
+    parser.add_argument('--offline_epochs', type=int, default=50,
+                       help='Number of offline pre-training epochs')
+    parser.add_argument('--batch_size', type=int, default=256,
+                       help='Batch size for offline training')
+    parser.add_argument('--bc_weight', type=float, default=1.0,
+                       help='Behavioral cloning weight')
     
     # Training
     parser.add_argument('--online_episodes', type=int, default=500,
@@ -239,6 +256,69 @@ def statistical_comparison(quantum_results: Dict, classical_results: Dict,
     }
 
 
+def evaluate_on_vitaldb_test_set(
+    agent,
+    test_data: Tuple[np.ndarray, np.ndarray, np.ndarray],
+    device: torch.device
+) -> Dict:
+    """
+    Evaluate agent on VitalDB test set.
+    
+    Args:
+        agent: Quantum or Classical agent
+        test_data: (states, actions, next_states) from VitalDB
+        device: torch device
+    
+    Returns:
+        Dictionary with evaluation metrics
+    """
+    states, actions, next_states = test_data
+    
+    # Predict actions
+    predicted_actions = []
+    
+    for state in tqdm(states, desc="VitalDB Test Set Evaluation"):
+        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
+        
+        with torch.no_grad():
+            if hasattr(agent, 'encoder') and agent.encoder is not None:
+                # Use encoder if available (simplified - full sequence tracking would be better)
+                hidden = None
+                encoded, hidden = agent.encoder(state_tensor.unsqueeze(0), hidden)
+                action = agent.actor(encoded.squeeze(0))
+            else:
+                action = agent.actor(state_tensor)
+        
+        predicted_actions.append(action.cpu().numpy().flatten())
+    
+    predicted_actions = np.array(predicted_actions)
+    
+    # Ensure 2D actions
+    if predicted_actions.shape[1] != 2:
+        print(f"Warning: Expected 2D actions, got shape {predicted_actions.shape}")
+        # Pad or truncate to 2D
+        if predicted_actions.shape[1] < 2:
+            predicted_actions = np.pad(predicted_actions, ((0, 0), (0, 2 - predicted_actions.shape[1])))
+        else:
+            predicted_actions = predicted_actions[:, :2]
+    
+    # Compute MDAPE for each drug
+    ppf_error = np.abs(predicted_actions[:, 0] - actions[:, 0]) / (np.abs(actions[:, 0]) + 1e-6)
+    rftn_error = np.abs(predicted_actions[:, 1] - actions[:, 1]) / (np.abs(actions[:, 1]) + 1e-6)
+    
+    mdape_ppf = np.median(ppf_error) * 100
+    mdape_rftn = np.median(rftn_error) * 100
+    mdape_avg = (mdape_ppf + mdape_rftn) / 2
+    
+    return {
+        'mdape_mean': mdape_avg,
+        'mdape_std': np.std([mdape_ppf, mdape_rftn]),
+        'mdape_propofol': mdape_ppf,
+        'mdape_remifentanil': mdape_rftn,
+        'mdape_list': [mdape_ppf, mdape_rftn]
+    }
+
+
 def plot_dualdrug_comparison(
     quantum_results: Dict, 
     classical_results: Dict, 
@@ -397,17 +477,85 @@ def main():
     print(f"Configuration:")
     print(f"  State dim: {args.state_dim}")
     print(f"  Action dim: {args.action_dim} (propofol + remifentanil)")
+    print(f"  VitalDB cases: {args.n_cases}")
+    print(f"  Offline epochs: {args.offline_epochs}")
     print(f"  Online episodes: {args.online_episodes}")
     print(f"  Test episodes: {args.n_test_episodes}")
     print(f"  Encoder: {args.encoder}")
     print(f"  Log dir: {comparison_dir}")
+    print("="*70 + "\n")
+    
+    # ========================================
+    # Load VitalDB Dual Drug Data
+    # ========================================
+    print("\n" + "="*70)
+    print("LOADING VITALDB DUAL DRUG DATA")
+    print("="*70)
+    
+    loader = VitalDBLoader(
+        cache_dir='data/vitaldb_cache',
+        use_cache=True
+    )
+    
+    print(f"\nLoading {args.n_cases} dual drug cases from VitalDB...")
+    states, actions, next_states, rewards, dones = loader.prepare_dual_drug_training_data(
+        n_cases=args.n_cases,
+        min_duration=1800,
+        save_path=comparison_dir / 'vitaldb_dual_drug.pkl'
+    )
+    
+    print(f"\n✓ Loaded dual drug data:")
+    print(f"  States shape: {states.shape}")
+    print(f"  Actions shape: {actions.shape}")
+    print(f"  Next states shape: {next_states.shape}")
+    print(f"  Rewards shape: {rewards.shape}")
+    print(f"  Rewards range: [{rewards.min():.3f}, {rewards.max():.3f}]")
+    print(f"  Rewards mean: {rewards.mean():.3f} ± {rewards.std():.3f}")
+    print(f"  Dones shape: {dones.shape}")
+    print(f"  Episodes completed: {dones.sum()}")
+    
+    # Split data (80/10/10)
+    n_total = len(states)
+    n_train = int(0.8 * n_total)
+    n_val = int(0.1 * n_total)
+    
+    indices = np.random.permutation(n_total)
+    train_indices = indices[:n_train]
+    val_indices = indices[n_train:n_train + n_val]
+    test_indices = indices[n_train + n_val:]
+    
+    train_data = (states[train_indices], actions[train_indices], next_states[train_indices])
+    val_data = (states[val_indices], actions[val_indices], next_states[val_indices])
+    test_data = (states[test_indices], actions[test_indices], next_states[test_indices])
+    
+    # Convert to dict format for stage1_offline_pretraining
+    # Use REAL rewards and dones from VitalDB data
+    train_data_dict = {
+        'states': states[train_indices], 
+        'actions': actions[train_indices], 
+        'next_states': next_states[train_indices],
+        'rewards': rewards[train_indices],
+        'dones': dones[train_indices]
+    }
+    val_data_dict = {
+        'states': states[val_indices], 
+        'actions': actions[val_indices], 
+        'next_states': next_states[val_indices],
+        'rewards': rewards[val_indices],
+        'dones': dones[val_indices]
+    }
+    
+    print(f"\nData split:")
+    print(f"  Train: {len(train_indices):,} samples")
+    print(f"  Val: {len(val_indices):,} samples")
+    print(f"  Test: {len(test_indices):,} samples")
     print("="*70)
     
     # ========================================
-    # Train Quantum Agent (Dual Drug)
+    # Train Quantum Agent (2-Stage)
     # ========================================
     print("\n" + "="*70)
-    print("TRAINING QUANTUM AGENT (DUAL DRUG)")
+    print("TRAINING QUANTUM AGENT (2-STAGE: OFFLINE + ONLINE)")
     print("="*70)
     
     quantum_agent = QuantumDDPGAgent(
@@ -430,70 +578,56 @@ def main():
     quantum_dirs = {
         'base': comparison_dir / 'quantum',
         'checkpoints': comparison_dir / 'quantum' / 'checkpoints',
+        'stage1': comparison_dir / 'quantum' / 'stage1_offline',
         'stage2': comparison_dir / 'quantum' / 'stage2_online',
     }
     for d in quantum_dirs.values():
         d.mkdir(parents=True, exist_ok=True)
     
-    # Online training on dual drug simulator
-    print(f"\nOnline training on dual drug simulator...")
-    print(f"  Episodes: {args.online_episodes}")
-    print(f"  Warmup: {args.warmup_episodes}")
+    # Stage 1: Offline Pre-training on VitalDB
+    print("\n" + "-"*70)
+    print("STAGE 1: OFFLINE PRE-TRAINING (VitalDB Dual Drug)")
+    print("-"*70)
     
-    env = DualDrugEnv(seed=args.seed)
+    quantum_agent = stage1_offline_pretraining(
+        agent=quantum_agent,
+        train_data=train_data_dict,
+        val_data=val_data_dict,
+        n_epochs=args.offline_epochs,
+        batch_size=args.batch_size,
+        bc_weight=args.bc_weight,
+        dirs={'save_dir': quantum_dirs['stage1']},
+        device=device
+    )
     
-    for episode in tqdm(range(args.online_episodes), desc="Quantum Online Training"):
-        state, _ = env.reset()
-        done = False
-        states_history = []
-        
-        add_noise = episode >= args.warmup_episodes
-        
-        while not done:
-            # Select action
-            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
-            
-            with torch.no_grad():
-                if quantum_agent.encoder is not None and len(states_history) > 0:
-                    recent_states = states_history[-19:] if len(states_history) >= 19 else states_history
-                    states_array = np.array(recent_states + [state], dtype=np.float32)
-                    states_seq = torch.FloatTensor(states_array).unsqueeze(0).to(device)
-                    encoded = quantum_agent.encoder(states_seq)
-                    if isinstance(encoded, tuple):
-                        encoded = encoded[0]
-                    action = quantum_agent.actor(encoded[:, -1, :])
-                else:
-                    action = quantum_agent.actor(state_tensor)
-            
-            action_np = action.cpu().numpy().flatten()
-            
-            # Add exploration noise
-            if add_noise:
-                noise = quantum_agent.noise()
-                action_np = action_np + noise[:args.action_dim]
-                action_np = np.clip(action_np, 0, 1)
-            
-            # Step
-            next_state, reward, terminated, truncated, _ = env.step(action_np)
-            done = terminated or truncated
-            
-            # Train
-            quantum_agent.train_step(state, action_np, reward, next_state, done)
-            
-            states_history.append(state)
-            state = next_state
-        
-        quantum_agent.decay_noise()
+    print(f"✓ Stage 1 complete: Quantum agent pre-trained on VitalDB dual drug data")
+    
+    # Stage 2: Online Fine-tuning on Simulator
+    print("\n" + "-"*70)
+    print("STAGE 2: ONLINE FINE-TUNING (Dual Drug Simulator)")
+    print("-"*70)
+    
+    quantum_agent = stage2_online_finetuning(
+        agent=quantum_agent,
+        env_class=DualDrugEnv,
+        n_episodes=args.online_episodes,
+        warmup_episodes=args.warmup_episodes,
+        save_dir=quantum_dirs['stage2'],
+        device=device,
+        seed=args.seed
+    )
+    
+    print(f"✓ Stage 2 complete: Quantum agent fine-tuned on simulator")
     
     # Save
     quantum_agent.save(str(quantum_dirs['checkpoints'] / 'final.pt'))
     print(f"✓ Quantum agent trained and saved")
     
     # ========================================
-    # Train Classical Agent (Dual Drug)
+    # Train Classical Agent (2-Stage)
     # ========================================
     print("\n" + "="*70)
-    print("TRAINING CLASSICAL AGENT (DUAL DRUG)")
+    print("TRAINING CLASSICAL AGENT (2-STAGE: OFFLINE + ONLINE)")
     print("="*70)
     
     classical_agent = ClassicalDDPGAgent(
@@ -516,57 +650,46 @@ def main():
     classical_dirs = {
         'base': comparison_dir / 'classical',
         'checkpoints': comparison_dir / 'classical' / 'checkpoints',
+        'stage1': comparison_dir / 'classical' / 'stage1_offline',
         'stage2': comparison_dir / 'classical' / 'stage2_online',
     }
     for d in classical_dirs.values():
         d.mkdir(parents=True, exist_ok=True)
     
-    # Online training
-    print(f"\nOnline training on dual drug simulator...")
+    # Stage 1: Offline Pre-training
+    print("\n" + "-"*70)
+    print("STAGE 1: OFFLINE PRE-TRAINING (VitalDB Dual Drug)")
+    print("-"*70)
     
-    env = DualDrugEnv(seed=args.seed + 1000)
+    classical_agent = stage1_offline_pretraining(
+        agent=classical_agent,
+        train_data=train_data_dict,
+        val_data=val_data_dict,
+        n_epochs=args.offline_epochs,
+        batch_size=args.batch_size,
+        bc_weight=args.bc_weight,
+        dirs={'save_dir': classical_dirs['stage1']},
+        device=device
+    )
     
-    for episode in tqdm(range(args.online_episodes), desc="Classical Online Training"):
-        state, _ = env.reset()
-        done = False
-        states_history = []
-        
-        add_noise = episode >= args.warmup_episodes
-        
-        while not done:
-            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
-            
-            with torch.no_grad():
-                if classical_agent.encoder is not None and len(states_history) > 0:
-                    recent_states = states_history[-19:] if len(states_history) >= 19 else states_history
-                    states_array = np.array(recent_states + [state], dtype=np.float32)
-                    states_seq = torch.FloatTensor(states_array).unsqueeze(0).to(device)
-                    encoded = classical_agent.encoder(states_seq)
-                    if isinstance(encoded, tuple):
-                        encoded = encoded[0]
-                    action = classical_agent.actor(encoded[:, -1, :])
-                else:
-                    action = classical_agent.actor(state_tensor)
-            
-            action_np = action.cpu().numpy().flatten()
-            
-            if add_noise:
-                noise = classical_agent.noise()
-                action_np = action_np + noise[:args.action_dim]
-                action_np = np.clip(action_np, 0, 1)
-            
-            next_state, reward, terminated, truncated, _ = env.step(action_np)
-            done = terminated or truncated
-            
-            classical_agent.train_step(state, action_np, reward, next_state, done)
-            
-            states_history.append(state)
-            state = next_state
-        
-        classical_agent.decay_noise()
+    print(f"✓ Stage 1 complete: Classical agent pre-trained on VitalDB dual drug data")
     
-    classical_agent.save(str(classical_dirs['checkpoints'] / 'final.pt'))
-    print(f"✓ Classical agent trained and saved")
+    # Stage 2: Online Fine-tuning
+    print("\n" + "-"*70)
+    print("STAGE 2: ONLINE FINE-TUNING (Dual Drug Simulator)")
+    print("-"*70)
+    
+    classical_agent = stage2_online_finetuning(
+        agent=classical_agent,
+        env_class=DualDrugEnv,
+        n_episodes=args.online_episodes,
+        warmup_episodes=args.warmup_episodes,
+        save_dir=classical_dirs['stage2'],
+        device=device,
+        seed=args.seed + 1000
+    )
+    
+    print(f"✓ Stage 2 complete: Classical agent fine-tuned on simulator")
     
     # ========================================
     # Evaluation
@@ -575,33 +698,81 @@ def main():
     print("EVALUATION")
     print("="*70)
     
-    # Evaluate on dual drug simulator
-    print(f"\nEvaluating Quantum agent...")
-    quantum_results = evaluate_agent_on_simulator_dualdrug(
+    # 1. Evaluate on VitalDB test set
+    print("\n" + "-"*70)
+    print("EVALUATING ON VITALDB TEST SET")
+    print("-"*70)
+    
+    print(f"\nEvaluating Quantum agent on VitalDB test set...")
+    quantum_vitaldb_results = evaluate_on_vitaldb_test_set(
+        quantum_agent, test_data, device
+    )
+    
+    print(f"\nEvaluating Classical agent on VitalDB test set...")
+    classical_vitaldb_results = evaluate_on_vitaldb_test_set(
+        classical_agent, test_data, device
+    )
+    
+    print(f"\n✓ VitalDB Test Set Results:")
+    print(f"  Quantum  - MDAPE: {quantum_vitaldb_results['mdape_mean']:.2f}% "
+          f"(PPF: {quantum_vitaldb_results['mdape_propofol']:.2f}%, "
+          f"RFTN: {quantum_vitaldb_results['mdape_remifentanil']:.2f}%)")
+    print(f"  Classical - MDAPE: {classical_vitaldb_results['mdape_mean']:.2f}% "
+          f"(PPF: {classical_vitaldb_results['mdape_propofol']:.2f}%, "
+          f"RFTN: {classical_vitaldb_results['mdape_remifentanil']:.2f}%)")
+    
+    # 2. Evaluate on dual drug simulator
+    print("\n" + "-"*70)
+    print("EVALUATING ON DUAL DRUG SIMULATOR")
+    print("-"*70)
+    
+    print(f"\nEvaluating Quantum agent on simulator...")
+    quantum_sim_results = evaluate_agent_on_simulator_dualdrug(
         quantum_agent, args.n_test_episodes, args.seed + 2000, device
     )
     
-    print(f"\nEvaluating Classical agent...")
-    classical_results = evaluate_agent_on_simulator_dualdrug(
+    print(f"\nEvaluating Classical agent on simulator...")
+    classical_sim_results = evaluate_agent_on_simulator_dualdrug(
         classical_agent, args.n_test_episodes, args.seed + 3000, device
     )
     
-    # Statistical comparison
-    print(f"\nPerforming statistical tests...")
-    stats_results = statistical_comparison(quantum_results, classical_results, args.alpha)
+    print(f"\n✓ Simulator Results:")
+    print(f"  Quantum  - MDAPE: {quantum_sim_results['mdape_mean']:.2f}%, "
+          f"Reward: {quantum_sim_results['reward_mean']:.2f}")
+    print(f"  Classical - MDAPE: {classical_sim_results['mdape_mean']:.2f}%, "
+          f"Reward: {classical_sim_results['reward_mean']:.2f}")
+    
+    # Statistical comparison (using simulator results)
+    print(f"\n" + "-"*70)
+    print("STATISTICAL COMPARISON")
+    print("-"*70)
+    stats_results = statistical_comparison(quantum_sim_results, classical_sim_results, args.alpha)
+    
+    print(f"\nStatistical Test Results:")
+    print(f"  Winner: {stats_results['winner']}")
+    print(f"  Improvement: {stats_results['improvement_pct']:.2f}%")
+    print(f"  t-test p-value: {stats_results['t_pvalue']:.4f} "
+          f"({'significant' if stats_results['t_significant'] else 'not significant'} at α={args.alpha})")
+    print(f"  Mann-Whitney U p-value: {stats_results['u_pvalue']:.4f} "
+          f"({'significant' if stats_results['u_significant'] else 'not significant'})")
+    print(f"  Cohen's d: {stats_results['cohens_d']:.3f}")
     
     # Generate plots
-    print(f"\nGenerating comparison plots...")
+    print(f"\n" + "-"*70)
+    print("GENERATING PLOTS")
+    print("-"*70)
     plot_dualdrug_comparison(
-        quantum_results, classical_results,
-        'Dual Drug Control: Quantum vs Classical',
-        comparison_dir / 'dualdrug_comparison.png'
+        quantum_sim_results, classical_sim_results,
+        'Dual Drug Control: Quantum vs Classical (Simulator)',
+        comparison_dir / 'dualdrug_comparison_simulator.png'
     )
     
     # Save results
     results = {
-        'quantum': quantum_results,
-        'classical': classical_results,
+        'quantum_vitaldb': quantum_vitaldb_results,
+        'classical_vitaldb': classical_vitaldb_results,
+        'quantum_simulator': quantum_sim_results,
+        'classical_simulator': classical_sim_results,
         'statistics': stats_results,
         'config': vars(args)
     }
@@ -609,7 +780,13 @@ def main():
     with open(comparison_dir / 'results.pkl', 'wb') as f:
         pickle.dump(results, f)
     
+    print(f"✓ Results saved to: {comparison_dir / 'results.pkl'}")
+    
     # Generate summary report
+    print(f"\n" + "-"*70)
+    print("GENERATING SUMMARY REPORT")
+    print("-"*70)
+    
     report_path = comparison_dir / 'summary_report.txt'
     with open(report_path, 'w') as f:
         f.write("="*70 + "\n")
@@ -620,32 +797,46 @@ def main():
         f.write("-"*70 + "\n")
         f.write(f"State dimension: {args.state_dim}\n")
         f.write(f"Action dimension: {args.action_dim} (propofol + remifentanil)\n")
+        f.write(f"VitalDB cases: {args.n_cases}\n")
+        f.write(f"Offline epochs: {args.offline_epochs}\n")
         f.write(f"Online episodes: {args.online_episodes}\n")
         f.write(f"Test episodes: {args.n_test_episodes}\n")
         f.write(f"Encoder: {args.encoder}\n")
         f.write(f"Seed: {args.seed}\n\n")
         
-        f.write("RESULTS\n")
+        f.write("VITALDB TEST SET RESULTS\n")
+        f.write("-"*70 + "\n")
+        f.write(f"Quantum Agent:\n")
+        f.write(f"  Overall MDAPE: {quantum_vitaldb_results['mdape_mean']:.2f}% ± {quantum_vitaldb_results['mdape_std']:.2f}%\n")
+        f.write(f"  Propofol MDAPE: {quantum_vitaldb_results['mdape_propofol']:.2f}%\n")
+        f.write(f"  Remifentanil MDAPE: {quantum_vitaldb_results['mdape_remifentanil']:.2f}%\n\n")
+        
+        f.write(f"Classical Agent:\n")
+        f.write(f"  Overall MDAPE: {classical_vitaldb_results['mdape_mean']:.2f}% ± {classical_vitaldb_results['mdape_std']:.2f}%\n")
+        f.write(f"  Propofol MDAPE: {classical_vitaldb_results['mdape_propofol']:.2f}%\n")
+        f.write(f"  Remifentanil MDAPE: {classical_vitaldb_results['mdape_remifentanil']:.2f}%\n\n")
+        
+        f.write("SIMULATOR TEST RESULTS\n")
         f.write("-"*70 + "\n")
         f.write(f"MDAPE:\n")
-        f.write(f"  Quantum:   {quantum_results['mdape_mean']:.2f} ± {quantum_results['mdape_std']:.2f}%\n")
-        f.write(f"  Classical: {classical_results['mdape_mean']:.2f} ± {classical_results['mdape_std']:.2f}%\n\n")
+        f.write(f"  Quantum:   {quantum_sim_results['mdape_mean']:.2f} ± {quantum_sim_results['mdape_std']:.2f}%\n")
+        f.write(f"  Classical: {classical_sim_results['mdape_mean']:.2f} ± {classical_sim_results['mdape_std']:.2f}%\n\n")
         
         f.write(f"Reward:\n")
-        f.write(f"  Quantum:   {quantum_results['reward_mean']:.2f} ± {quantum_results['reward_std']:.2f}\n")
-        f.write(f"  Classical: {classical_results['reward_mean']:.2f} ± {classical_results['reward_std']:.2f}\n\n")
+        f.write(f"  Quantum:   {quantum_sim_results['reward_mean']:.2f} ± {quantum_sim_results['reward_std']:.2f}\n")
+        f.write(f"  Classical: {classical_sim_results['reward_mean']:.2f} ± {classical_sim_results['reward_std']:.2f}\n\n")
         
         f.write(f"Time in Target (BIS 45-55):\n")
-        f.write(f"  Quantum:   {quantum_results['time_in_target_mean']:.1f}%\n")
-        f.write(f"  Classical: {classical_results['time_in_target_mean']:.1f}%\n\n")
+        f.write(f"  Quantum:   {quantum_sim_results['time_in_target_mean']:.1f}%\n")
+        f.write(f"  Classical: {classical_sim_results['time_in_target_mean']:.1f}%\n\n")
         
         f.write(f"Drug Usage:\n")
         f.write(f"  Propofol:\n")
-        f.write(f"    Quantum:   {quantum_results['propofol_usage_mean']:.2f} ± {quantum_results['propofol_usage_std']:.2f} mg/kg/h\n")
-        f.write(f"    Classical: {classical_results['propofol_usage_mean']:.2f} ± {classical_results['propofol_usage_std']:.2f} mg/kg/h\n")
+        f.write(f"    Quantum:   {quantum_sim_results['propofol_usage_mean']:.2f} ± {quantum_sim_results['propofol_usage_std']:.2f} mg/kg/h\n")
+        f.write(f"    Classical: {classical_sim_results['propofol_usage_mean']:.2f} ± {classical_sim_results['propofol_usage_std']:.2f} mg/kg/h\n")
         f.write(f"  Remifentanil:\n")
-        f.write(f"    Quantum:   {quantum_results['remifentanil_usage_mean']:.2f} ± {quantum_results['remifentanil_usage_std']:.2f} μg/kg/min\n")
-        f.write(f"    Classical: {classical_results['remifentanil_usage_mean']:.2f} ± {classical_results['remifentanil_usage_std']:.2f} μg/kg/min\n\n")
+        f.write(f"    Quantum:   {quantum_sim_results['remifentanil_usage_mean']:.2f} ± {quantum_sim_results['remifentanil_usage_std']:.2f} μg/kg/min\n")
+        f.write(f"    Classical: {classical_sim_results['remifentanil_usage_mean']:.2f} ± {classical_sim_results['remifentanil_usage_std']:.2f} μg/kg/min\n\n")
         
         f.write("STATISTICAL TESTS\n")
         f.write("-"*70 + "\n")
@@ -675,23 +866,28 @@ def main():
     print("\n" + "="*70)
     print("RESULTS SUMMARY (DUAL DRUG)")
     print("="*70)
-    print(f"\nMDAPE:")
-    print(f"  Quantum:   {quantum_results['mdape_mean']:.2f} ± {quantum_results['mdape_std']:.2f}%")
-    print(f"  Classical: {classical_results['mdape_mean']:.2f} ± {classical_results['mdape_std']:.2f}%")
+    
+    print(f"\nVitalDB Test Set:")
+    print(f"  Quantum MDAPE:   {quantum_vitaldb_results['mdape_mean']:.2f}%")
+    print(f"  Classical MDAPE: {classical_vitaldb_results['mdape_mean']:.2f}%")
+    
+    print(f"\nSimulator Test Set:")
+    print(f"  Quantum MDAPE:   {quantum_sim_results['mdape_mean']:.2f} ± {quantum_sim_results['mdape_std']:.2f}%")
+    print(f"  Classical MDAPE: {classical_sim_results['mdape_mean']:.2f} ± {classical_sim_results['mdape_std']:.2f}%")
     print(f"  Winner: {stats_results['winner']} ({stats_results['improvement_pct']:.2f}% improvement)")
     print(f"  Significant: {'YES' if stats_results['t_significant'] else 'NO'} (p={stats_results['t_pvalue']:.4f})")
     
     print(f"\nTime in Target (BIS 45-55):")
-    print(f"  Quantum:   {quantum_results['time_in_target_mean']:.1f}%")
-    print(f"  Classical: {classical_results['time_in_target_mean']:.1f}%")
+    print(f"  Quantum:   {quantum_sim_results['time_in_target_mean']:.1f}%")
+    print(f"  Classical: {classical_sim_results['time_in_target_mean']:.1f}%")
     
     print(f"\nPropofol usage:")
-    print(f"  Quantum:   {quantum_results['propofol_usage_mean']:.2f} ± {quantum_results['propofol_usage_std']:.2f} mg/kg/h")
-    print(f"  Classical: {classical_results['propofol_usage_mean']:.2f} ± {classical_results['propofol_usage_std']:.2f} mg/kg/h")
+    print(f"  Quantum:   {quantum_sim_results['propofol_usage_mean']:.2f} ± {quantum_sim_results['propofol_usage_std']:.2f} mg/kg/h")
+    print(f"  Classical: {classical_sim_results['propofol_usage_mean']:.2f} ± {classical_sim_results['propofol_usage_std']:.2f} mg/kg/h")
     
     print(f"\nRemifentanil usage:")
-    print(f"  Quantum:   {quantum_results['remifentanil_usage_mean']:.2f} ± {quantum_results['remifentanil_usage_std']:.2f} μg/kg/min")
-    print(f"  Classical: {classical_results['remifentanil_usage_mean']:.2f} ± {classical_results['remifentanil_usage_std']:.2f} μg/kg/min")
+    print(f"  Quantum:   {quantum_sim_results['remifentanil_usage_mean']:.2f} ± {quantum_sim_results['remifentanil_usage_std']:.2f} μg/kg/min")
+    print(f"  Classical: {classical_sim_results['remifentanil_usage_mean']:.2f} ± {classical_sim_results['remifentanil_usage_std']:.2f} μg/kg/min")
     
     print(f"\n✓ All results saved to: {comparison_dir}")
     print("="*70)

@@ -53,6 +53,16 @@ from typing import Optional, Tuple, Dict, List, Union
 from scipy.integrate import odeint
 from enum import Enum
 
+# Import from centralized pharmacokinetics module
+from models.pharmacokinetics import (
+    BasePKModel,
+    PatientParameters,
+    MintoModel as MintoModelBase,
+    MintoParameters,
+    SchniderModel,
+    SchniderParameters
+)
+
 
 class BISModelType(Enum):
     """Type of BIS prediction model."""
@@ -76,470 +86,18 @@ class DrugInteractionParams:
     noise_std: float = 2.0       # Measurement noise std
 
 
-@dataclass
-class PatientParameters:
-    """
-    Patient demographic parameters for PK/PD model individualization.
-    
-    Attributes:
-        age: Patient age in years
-        weight: Patient weight in kg
-        height: Patient height in cm
-        gender: Patient gender ('male' or 'female')
-        lbm: Lean body mass in kg (calculated if not provided)
-    """
-    age: float = 40.0
-    weight: float = 70.0
-    height: float = 170.0
-    gender: str = "male"
-    lbm: Optional[float] = None
-    
-    def __post_init__(self):
-        """Calculate lean body mass if not provided."""
-        if self.lbm is None:
-            self.lbm = self._calculate_lbm()
-    
-    def _calculate_lbm(self) -> float:
-        """
-        Calculate Lean Body Mass using James formula.
-        
-        For males: LBM = 1.1 * weight - 128 * (weight/height)^2
-        For females: LBM = 1.07 * weight - 148 * (weight/height)^2
-        """
-        height_m = self.height / 100.0  # Convert to meters
-        weight_height_ratio = self.weight / (self.height ** 2) * 10000  # (weight/height^2) in proper units
-        
-        if self.gender.lower() == "male":
-            lbm = 1.1 * self.weight - 128 * (self.weight / self.height) ** 2 # Formulation (4), it uses **2 in the original paper
-        else:
-            lbm = 1.07 * self.weight - 148 * (self.weight / self.height) ** 2 # Formulation (5), it uses **2 in the original paper
-        
-        # Ensure LBM is reasonable (at least 30% of body weight)
-        return max(lbm, 0.3 * self.weight)
+# PatientParameters is now imported from models.pharmacokinetics.base
+# No need to redefine it here
 
 
-@dataclass
-class SchniderModelParameters:
-    """
-    Schnider model PK/PD parameters.
-    
-    These parameters define the three-compartment pharmacokinetic model
-    and the effect-site pharmacodynamic model for propofol.
-    """
-
-    # Table A.4 notation
-    h_1: float = 4.27      # V1 (L)
-    h_2: float = 18.9      # V2 base
-    h_3: float = 0.391     # V2 age coefficient
-    h_4: float = 53        # Age reference
-    h_5: float = 238.0     # V3 (L)
-    h_6: float = 1.89      # Cl1 base
-    h_7: float = 0.0456    # Weight coefficient
-    h_8: float = 77        # Weight reference (kg)
-    h_9: float = 0.0681    # LBM coefficient
-    h_10: float = 59       # LBM reference (kg)
-    h_11: float = 0.0264   # Height coefficient
-    h_12: float = 177      # Height reference (cm)
-    h_13: float = 1.29     # Cl2 base
-    h_14: float = 0.024    # Cl2 age coefficient
-    h_15: float = 53       # Cl2 age reference
-    h_16: float = 0.836    # Cl3 (L/min)
-    h_17: float = 0.456    # ke0 (min^-1)
-
-    # Compartment volumes (L)
-    v1: float = 4.27      # Central compartment
-    v2: float = 18.9      # Shallow peripheral compartment  
-    v3: float = 238.0     # Deep peripheral compartment
-    
-    # Rate constants (min^-1)
-    k10: float = 0.443    # Elimination from central
-    k12: float = 0.302    # Central to shallow peripheral
-    k13: float = 0.196    # Central to deep peripheral
-    k21: float = 0.092    # Shallow peripheral to central
-    k31: float = 0.0048   # Deep peripheral to central
-    ke0: float = 0.456    # Effect-site equilibration
-    
-    # Hill model parameters for BIS
-    e0: float = 97.0      # Baseline BIS (awake)
-    emax: float = 97.0    # Maximum effect
-    ec50: float = 3.4     # Effect-site concentration at 50% effect (μg/ml)
-    gamma: float = 3.0    # Hill coefficient (steepness)
+# SchniderModel and SchniderParameters have been moved to:
+# src/models/pharmacokinetics/schnider_model.py
+# Import them using: from models.pharmacokinetics import SchniderModel, SchniderParameters
 
 
-class SchniderModel:
-    """
-    Schnider PK/PD Model for Propofol.
-    
-    Implements the three-compartment pharmacokinetic model with effect-site
-    compartment and Hill sigmoid pharmacodynamic model for BIS prediction.
-    
-    The model can be individualized based on patient demographics following
-    the Schnider covariate model equations.
-    
-    Attributes:
-        patient: Patient demographic parameters
-        params: Schnider model parameters
-        use_covariates: Whether to adjust parameters based on patient covariates
-    """
-    
-    def __init__(
-        self,
-        patient: Optional[PatientParameters] = None,
-        params: Optional[SchniderModelParameters] = None,
-        use_covariates: bool = True
-    ):
-        """
-        Initialize the Schnider model.
-        
-        Args:
-            patient: Patient demographic parameters (uses defaults if None)
-            params: Model parameters (uses population defaults if None)
-            use_covariates: If True, adjust parameters based on patient demographics
-        """
-        self.patient = patient or PatientParameters()
-        self.params = params or SchniderModelParameters()
-        self.use_covariates = use_covariates
-        
-        # Apply covariate adjustments if requested
-        if use_covariates:
-            self._apply_schnider_covariates()
-    
-    def _apply_schnider_covariates(self):
-        """
-        Apply Schnider covariate model to adjust PK parameters.
-        
-        The Schnider model adjusts volumes and clearances based on:
-        - Age
-        - Weight  
-        - Lean Body Mass (LBM)
-        - Height
-        
-        References: Schnider et al., Anesthesiology 1998
-        """
-        age = self.patient.age
-        weight = self.patient.weight
-        lbm = self.patient.lbm
-        height = self.patient.height
-        
-        # Schnider covariate equations for volumes
-        # V1 is fixed at 4.27 L
-        self.params.v1 = self.params.h_1 # Formulation (6)
-        
-        # V2 depends on age
-        self.params.v2 = self.params.h_2 - self.params.h_3 * (age - self.params.h_4) # Formulation (7)
-        
-        # V3 is fixed
-        self.params.v3 = self.params.h_5 # Formulation (8)
-        
-        # Clearances and rate constants
-        # Cl1 (elimination clearance) depends on weight
-        cl1 = self.params.h_6 + self.params.h_7 * (weight - self.params.h_8) - self.params.h_9 * (lbm - self.params.h_10) + self.params.h_11 * (height - self.params.h_12) # Formulation (9)
-        cl2 = self.params.h_13 - self.params.h_14 * (age - self.params.h_15) # Formulation (10)
-        cl3 = self.params.h_16 # Formulation (11)
-        
-        # Convert clearances to rate constants
-        self.params.k10 = cl1 / self.params.v1 # Formulation (12)
-        self.params.k12 = cl2 / self.params.v1 # Formulation (13)
-        self.params.k13 = cl3 / self.params.v1 # Formulation (14)
-        self.params.k21 = cl2 / self.params.v2 # Formulation (15)
-        self.params.k31 = cl3 / self.params.v3 # Formulation (16)
-        
-        # ke0 is typically fixed but can vary with age
-        self.params.ke0 = self.params.h_17 # Formulation (17)
-    
-    def get_rate_constants(self) -> Dict[str, float]:
-        """Return all rate constants as a dictionary."""
-        return {
-            'k10': self.params.k10,
-            'k12': self.params.k12,
-            'k13': self.params.k13,
-            'k21': self.params.k21,
-            'k31': self.params.k31,
-            'ke0': self.params.ke0
-        }
-    
-    def get_volumes(self) -> Dict[str, float]:
-        """Return compartment volumes as a dictionary."""
-        return {
-            'v1': self.params.v1,
-            'v2': self.params.v2,
-            'v3': self.params.v3
-        }
-    
-    def get_state_space_matrices(self) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Get the state-space matrices A and B for the 3-compartment model.
-        
-        Formulations (1)-(3) in matrix form: ẋ(t) = Ax(t) + Bu(t)
-        
-        A = [-(k₁₀+k₁₂+k₁₃)  k₂₁         k₃₁      ]
-            [k₁₂             -k₂₁        0        ]
-            [k₁₃             0           -k₃₁     ]
-        
-        B = [1/V₁, 0, 0]ᵀ  (converts infusion rate to concentration rate)
-        
-        Returns:
-            Tuple of (A_matrix, B_vector) numpy arrays
-        """
-        p = self.params
-
-        # Volume ratios
-        r21 = p.v2 / p.v1
-        r31 = p.v3 / p.v1
-        r12 = p.v1 / p.v2
-        r13 = p.v1 / p.v3
-        
-        # System matrix A - Formulations (1)-(3) coefficients
-        A = np.array([
-            [-(p.k10 + p.k12 + p.k13), p.k21 * r21, p.k31 * r31],
-        [p.k12 * r12, -p.k21, 0.0],
-        [p.k13 * r13, 0.0, -p.k31]
-        ])
-        
-        # Input vector B (1/V1 to convert infusion to concentration)
-        # Infusion rate is μg/kg/min, divide by V1*1000 to get μg/ml/min
-        B = np.array([1.0 / (p.v1 * 1000), 0.0, 0.0])
-        
-        return A, B
-    
-    def get_extended_state_space_matrices(self) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Get extended state-space matrices including effect-site compartment.
-        
-        Extended state: x = [C₁, C₂, C₃, Cₑ]ᵀ
-        
-        Formulation (31): Ċₑ(t) = ke₀·(C₁(t) - Cₑ(t))
-        
-        Returns:
-            Tuple of (A_extended, B_extended) numpy arrays
-        """
-        p = self.params
-
-        # Volume ratios
-        r21 = p.v2 / p.v1
-        r31 = p.v3 / p.v1
-        r12 = p.v1 / p.v2
-        r13 = p.v1 / p.v3
-        
-        # Extended system matrix (4x4)
-        A_ext = np.array([
-            [-(p.k10 + p.k12 + p.k13), p.k21 * r21, p.k31 * r31, 0.0],
-        [p.k12 * r12, -p.k21, 0.0, 0.0],
-        [p.k13 * r13, 0.0, -p.k31, 0.0],
-        [p.ke0, 0.0, 0.0, -p.ke0]  # Formulation (31)
-        ])
-        
-        # Extended input vector
-        B_ext = np.array([1.0 / (p.v1 * 1000), 0.0, 0.0, 0.0])
-        
-        return A_ext, B_ext
-
-
-@dataclass
-class MintoModelParameters:
-    """
-    Minto model PK/PD parameters for Remifentanil.
-    
-    These parameters define the three-compartment pharmacokinetic model
-    and the effect-site pharmacodynamic model for remifentanil.
-    """
-
-    # Table A.4 notation
-    f_1: float = 5.1       # V1 base (L)
-    f_2: float = 0.0201    # V1 age coefficient
-    f_3: float = 0.072     # V1 LBM coefficient
-    f_4: float = 9.82      # V2 base (L)
-    f_5: float = 0.0811    # V2 age coefficient
-    f_6: float = 0.108     # V2 LBM coefficient
-    f_7: float = 5.42      # V3 (L)
-    f_8: float = 2.6       # Cl1 base (L/min)
-    f_9: float = 0.0162    # Cl1 age coefficient
-    f_10: float = 0.0191   # Cl1 LBM coefficient
-    f_11: float = 2.05     # Cl2 base (L/min)
-    f_12: float = 0.030   # Cl2 age coefficient
-    f_13: float = 0.076   # Cl2 LBM coefficient
-    f_14: float = 0.0013    # Cl3 base (L/min)
-    f_15: float = 0.595   # Cl3 weight coefficient
-    f_16: float = 0.007   # Cl3 age coefficient
-    f_17: float = 40       # Age reference
-    f_18: float = 55       # LBM reference (kg)
-    
-    # Compartment volumes (L)
-    v1: float = 5.1       # Central compartment
-    v2: float = 9.82      # Shallow peripheral compartment
-    v3: float = 5.42      # Deep peripheral compartment
-    
-    # Rate constants (min^-1)
-    k10: float = 0.51     # Elimination from central
-    k12: float = 0.40     # Central to shallow peripheral
-    k13: float = 0.015    # Central to deep peripheral
-    k21: float = 0.21     # Shallow peripheral to central
-    k31: float = 0.014    # Deep peripheral to central
-    ke0: float = 0.595    # Effect-site equilibration
-    
-    # Hill model parameters for effect
-    e0: float = 97.0      # Baseline effect
-    emax: float = 97.0    # Maximum effect
-    ec50: float = 12.0    # Effect-site concentration at 50% effect (ng/ml)
-    gamma: float = 2.0    # Hill coefficient (steepness)
-
-
-class MintoModel:
-    """
-    Minto PK/PD Model for Remifentanil.
-    
-    Implements the three-compartment pharmacokinetic model with effect-site
-    compartment and Hill sigmoid pharmacodynamic model for effect prediction.
-    
-    The model can be individualized based on patient demographics following
-    the Minto covariate model equations.
-    
-    Attributes:
-        patient: Patient demographic parameters
-        params: Minto model parameters
-        use_covariates: Whether to adjust parameters based on patient covariates
-    """
-    
-    def __init__(
-        self,
-        patient: Optional[PatientParameters] = None,
-        params: Optional[MintoModelParameters] = None,
-        use_covariates: bool = True
-    ):
-        """
-        Initialize the Minto model.
-        
-        Args:
-            patient: Patient demographic parameters (uses defaults if None)
-            params: Model parameters (uses population defaults if None)
-            use_covariates: If True, adjust parameters based on patient demographics
-        """
-        self.patient = patient or PatientParameters()
-        self.params = params or MintoModelParameters()
-        self.use_covariates = use_covariates
-        
-        # Apply covariate adjustments if requested
-        if use_covariates:
-            self._apply_minto_covariates()
-    
-    def _apply_minto_covariates(self):
-        """
-        Apply Minto covariate model to adjust PK parameters.
-        
-        The Minto model adjusts volumes and clearances based on:
-        - Age
-        - Weight
-        - Lean Body Mass (LBM)
-        
-        References: Minto et al., Anesthesiology 1997
-        """
-        age = self.patient.age
-        weight = self.patient.weight
-        lbm = self.patient.lbm
-        
-        # Minto covariate equations for volumes
-        # V1 depends on age and LBM
-        self.params.v1 = self.params.f_1 - self.params.f_2 * (age - self.params.f_17) + self.params.f_3 * (lbm - self.params.f_18)  # Formulation (18)
-        
-        # V2 depends on age and LBM
-        self.params.v2 = self.params.f_4 - self.params.f_5 * (age - self.params.f_17) + self.params.f_6 * (lbm - self.params.f_18)  # Formulation (19)
-        
-        # V3 is fixed
-        self.params.v3 = self.params.f_7  # Formulation (20)
-        
-        # Clearances
-        cl1 = self.params.f_8 - self.params.f_9 * (age - self.params.f_17) + self.params.f_10 * (lbm - self.params.f_18)  # Formulation (21)
-        cl2 = self.params.f_11 - self.params.f_12 * (age - self.params.f_17)  # Formulation (22)
-        cl3 = self.params.f_13 - self.params.f_14 * (age - self.params.f_17)  # Formulation (23)
-        
-        # Convert clearances to rate constants
-        self.params.k10 = cl1 / self.params.v1  # Formulation (24)
-        self.params.k12 = cl2 / self.params.v1  # Formulation (25)
-        self.params.k13 = cl3 / self.params.v1  # Formulation (26)
-        self.params.k21 = cl2 / self.params.v2  # Formulation (27)
-        self.params.k31 = cl3 / self.params.v3  # Formulation (28)
-        
-        # ke0 is fixed
-        self.params.ke0 = self.params.f_15 - self.params.f_16 * (age - self.params.f_17)  # Formulation (29)
-    
-    def get_rate_constants(self) -> Dict[str, float]:
-        """Return all rate constants as a dictionary."""
-        return {
-            'k10': self.params.k10,
-            'k12': self.params.k12,
-            'k13': self.params.k13,
-            'k21': self.params.k21,
-            'k31': self.params.k31,
-            'ke0': self.params.ke0
-        }
-    
-    def get_volumes(self) -> Dict[str, float]:
-        """Return compartment volumes as a dictionary."""
-        return {
-            'v1': self.params.v1,
-            'v2': self.params.v2,
-            'v3': self.params.v3
-        }
-    
-    def get_state_space_matrices(self) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Get the state-space matrices A and B for Remifentanil 3-compartment model.
-        
-        Formulations (1)-(3) adapted for remifentanil: ẋ(t) = Ax(t) + Bu(t)
-        
-        Returns:
-            Tuple of (A_matrix, B_vector) numpy arrays
-        """
-        p = self.params
-
-        # Volume ratios
-        r21 = p.v2 / p.v1
-        r31 = p.v3 / p.v1
-        r12 = p.v1 / p.v2
-        r13 = p.v1 / p.v3
-        
-        # System matrix A
-        A = np.array([
-            [-(p.k10 + p.k12 + p.k13), p.k21 * r21, p.k31 * r31],
-        [p.k12 * r12, -p.k21, 0.0],
-        [p.k13 * r13, 0.0, -p.k31]
-        ])
-        
-        # Input vector B (1/V1 to convert infusion to concentration)
-        # Remifentanil: ng/kg/min → ng/ml
-        B = np.array([1.0 / (p.v1 * 1000), 0.0, 0.0])
-        
-        return A, B
-    
-    def get_extended_state_space_matrices(self) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Get extended state-space matrices including effect-site compartment.
-        
-        Extended state: x = [C₁, C₂, C₃, Cₑ]ᵀ
-        
-        Returns:
-            Tuple of (A_extended, B_extended) numpy arrays
-        """
-        p = self.params
-
-        # Volume ratios
-        r21 = p.v2 / p.v1
-        r31 = p.v3 / p.v1
-        r12 = p.v1 / p.v2
-        r13 = p.v1 / p.v3
-        
-        # Extended system matrix (4x4)
-        A_ext = np.array([
-            [-(p.k10 + p.k12 + p.k13), p.k21 * r21, p.k31 * r31, 0.0],
-        [p.k12 * r12, -p.k21, 0.0, 0.0],
-        [p.k13 * r13, 0.0, -p.k31, 0.0],
-        [p.ke0, 0.0, 0.0, -p.ke0]
-        ])
-        
-        # Extended input vector
-        B_ext = np.array([1.0 / (p.v1 * 1000), 0.0, 0.0, 0.0])
-        
-        return A_ext, B_ext
+# MintoModelParameters and MintoModel classes have been moved to:
+# src/models/pharmacokinetics/minto_model.py
+# Import them using: from models.pharmacokinetics import MintoModel, MintoParameters
 
 
 class PatientSimulator:
@@ -610,8 +168,8 @@ class PatientSimulator:
             self.patient = patient or PatientParameters()
             self.ppf_model = SchniderModel(patient=self.patient)
         
-        # Remifentanil model (Minto)
-        self.rftn_model = MintoModel(patient=self.patient)
+        # Remifentanil model (Minto) - using centralized model
+        self.rftn_model = MintoModelBase(patient=self.patient)
         
         # Alias for backward compatibility
         self.model = self.ppf_model
@@ -693,16 +251,16 @@ class PatientSimulator:
         
         # Formulation (1): dx₁/dt = -(k₁₀+k₁₂+k₁₃)x₁ + k₂₁x₂ + k₃₁x₃ + u(t)
         ppf_infusion_ug_per_min = ppf_rate * weight
-        dC1_ppf = (ppf_infusion_ug_per_min / (p.v1 * 1000)
+        dC1_ppf = (ppf_infusion_ug_per_min / (p.V1 * 1000)
                    - (p.k10 + p.k12 + p.k13) * C1_ppf
-                   + p.k21 * C2_ppf * p.v2 / p.v1
-                   + p.k31 * C3_ppf * p.v3 / p.v1)
+                   + p.k21 * C2_ppf * p.V2 / p.V1
+                   + p.k31 * C3_ppf * p.V3 / p.V1)
         
         # Formulation (2): dx₂/dt = k₁₂x₁ - k₂₁x₂
-        dC2_ppf = p.k12 * C1_ppf * p.v1 / p.v2 - p.k21 * C2_ppf
+        dC2_ppf = p.k12 * C1_ppf * p.V1 / p.V2 - p.k21 * C2_ppf
         
         # Formulation (3): dx₃/dt = k₁₃x₁ - k₃₁x₃
-        dC3_ppf = p.k13 * C1_ppf * p.v1 / p.v3 - p.k31 * C3_ppf
+        dC3_ppf = p.k13 * C1_ppf * p.V1 / p.V3 - p.k31 * C3_ppf
         
         # Formulation (31): Ċₑ(t) = ke₀·(C₁(t) - Cₑ(t))
         dCe_ppf = p.ke0 * (C1_ppf - Ce_ppf)
@@ -712,13 +270,13 @@ class PatientSimulator:
         
         # Same formulations (1)-(3) for remifentanil
         rftn_infusion_ng_per_min = rftn_rate * weight
-        dC1_rftn = (rftn_infusion_ng_per_min / (r.v1 * 1000)
+        dC1_rftn = (rftn_infusion_ng_per_min / (r.V1 * 1000)
                     - (r.k10 + r.k12 + r.k13) * C1_rftn
-                    + r.k21 * C2_rftn * r.v2 / r.v1
-                    + r.k31 * C3_rftn * r.v3 / r.v1)
+                    + r.k21 * C2_rftn * r.V2 / r.V1
+                    + r.k31 * C3_rftn * r.V3 / r.V1)
         
-        dC2_rftn = r.k12 * C1_rftn * r.v1 / r.v2 - r.k21 * C2_rftn
-        dC3_rftn = r.k13 * C1_rftn * r.v1 / r.v3 - r.k31 * C3_rftn
+        dC2_rftn = r.k12 * C1_rftn * r.V1 / r.V2 - r.k21 * C2_rftn
+        dC3_rftn = r.k13 * C1_rftn * r.V1 / r.V3 - r.k31 * C3_rftn
         
         # Formulation (31) for remifentanil
         dCe_rftn = r.ke0 * (C1_rftn - Ce_rftn)
@@ -747,16 +305,16 @@ class PatientSimulator:
         infusion_ug_per_min = infusion_rate * weight
         
         # Formulation (1)
-        dC1 = (infusion_ug_per_min / (p.v1 * 1000)
+        dC1 = (infusion_ug_per_min / (p.V1 * 1000)
                - (p.k10 + p.k12 + p.k13) * C1
-               + p.k21 * C2 * p.v2 / p.v1
-               + p.k31 * C3 * p.v3 / p.v1)
+               + p.k21 * C2 * p.V2 / p.V1
+               + p.k31 * C3 * p.V3 / p.V1)
         
         # Formulation (2)
-        dC2 = p.k12 * C1 * p.v1 / p.v2 - p.k21 * C2
+        dC2 = p.k12 * C1 * p.V1 / p.V2 - p.k21 * C2
         
         # Formulation (3)
-        dC3 = p.k13 * C1 * p.v1 / p.v3 - p.k31 * C3
+        dC3 = p.k13 * C1 * p.V1 / p.V3 - p.k31 * C3
         
         # Formulation (31)
         dCe = p.ke0 * (C1 - Ce)
@@ -1014,6 +572,171 @@ class PatientSimulator:
             'propofol': self.ppf_model.get_extended_state_space_matrices(),
             'remifentanil': self.rftn_model.get_extended_state_space_matrices()
         }
+    
+    # =============================================================================
+    # VitalDB Validation Methods
+    # =============================================================================
+    
+    @classmethod
+    def from_vitaldb_demographics(
+        cls,
+        age: float,
+        weight: float,
+        height: float,
+        sex: str,
+        dt: float = 5.0,
+        noise_std: float = 2.0,
+        seed: Optional[int] = None,
+        bis_model_type: BISModelType = BISModelType.DRUG_INTERACTION,
+    ) -> 'PatientSimulator':
+        """
+        Create PatientSimulator from VitalDB patient demographics.
+        
+        Args:
+            age: Patient age (years)
+            weight: Patient weight (kg)
+            height: Patient height (cm)
+            sex: Patient sex ('male' or 'female')
+            dt: Time step (seconds)
+            noise_std: BIS measurement noise standard deviation
+            seed: Random seed
+            bis_model_type: BIS model type
+        
+        Returns:
+            PatientSimulator initialized with VitalDB demographics
+        """
+        # Convert sex nomenclature if needed
+        gender = sex.lower()
+        if gender not in ['male', 'female']:
+            gender = 'male'  # Default
+        
+        patient = PatientParameters(
+            age=age,
+            weight=weight,
+            height=height,
+            gender=gender,
+        )
+        
+        return cls(
+            patient=patient,
+            dt=dt,
+            noise_std=noise_std,
+            seed=seed,
+            bis_model_type=bis_model_type,
+        )
+    
+    def validate_against_vitaldb(
+        self,
+        times: np.ndarray,
+        bis_observed: np.ndarray,
+        ce_ppf_observed: np.ndarray,
+        ppf_doses: np.ndarray,
+        ce_rftn_observed: Optional[np.ndarray] = None,
+        rftn_doses: Optional[np.ndarray] = None,
+    ) -> Dict[str, float]:
+        """
+        Validate PK/PD model predictions against VitalDB ground truth.
+        
+        Compares simulator BIS predictions to actual BIS measurements from VitalDB,
+        given the same drug infusion trajectories.
+        
+        Args:
+            times: Time points (seconds)
+            bis_observed: Observed BIS values from VitalDB
+            ce_ppf_observed: Observed propofol effect-site concentrations (μg/mL)
+            ppf_doses: Propofol infusion rates (μg/kg/min)
+            ce_rftn_observed: Observed remifentanil effect-site concentrations (ng/mL)
+            rftn_doses: Remifentanil infusion rates (μg/kg/min)
+        
+        Returns:
+            Dictionary with validation metrics:
+                - bis_rmse: Root mean squared error for BIS
+                - bis_mae: Mean absolute error for BIS
+                - bis_r2: R-squared coefficient for BIS
+                - ce_ppf_rmse: RMSE for propofol effect-site concentration
+                - ce_ppf_mae: MAE for propofol effect-site concentration
+                - ce_ppf_r2: R-squared for propofol effect-site concentration
+        """
+        # Reset simulator
+        self.reset()
+        
+        # Initialize arrays for predictions
+        bis_predicted = []
+        ce_ppf_predicted = []
+        ce_rftn_predicted = []
+        
+        # Simulate trajectory
+        for i in range(len(times)):
+            # Get current doses
+            ppf_dose = ppf_doses[i] if i < len(ppf_doses) else 0.0
+            rftn_dose = rftn_doses[i] if rftn_doses is not None and i < len(rftn_doses) else 0.0
+            
+            # Step simulator
+            state_ppf, state_rftn, bis = self.step_dual_drug(ppf_dose, rftn_dose)
+            
+            # Record predictions (without noise for comparison)
+            bis_predicted.append(self._compute_bis(state_ppf[3], state_rftn[3]))
+            ce_ppf_predicted.append(state_ppf[3])
+            ce_rftn_predicted.append(state_rftn[3])
+        
+        # Convert to arrays
+        bis_predicted = np.array(bis_predicted)
+        ce_ppf_predicted = np.array(ce_ppf_predicted)
+        ce_rftn_predicted = np.array(ce_rftn_predicted)
+        
+        # Filter out NaN/invalid values
+        valid_mask = ~np.isnan(bis_observed)
+        bis_obs_valid = bis_observed[valid_mask]
+        bis_pred_valid = bis_predicted[valid_mask]
+        
+        # Compute BIS validation metrics
+        bis_rmse = np.sqrt(np.mean((bis_pred_valid - bis_obs_valid) ** 2))
+        bis_mae = np.mean(np.abs(bis_pred_valid - bis_obs_valid))
+        
+        # R-squared
+        ss_res = np.sum((bis_obs_valid - bis_pred_valid) ** 2)
+        ss_tot = np.sum((bis_obs_valid - np.mean(bis_obs_valid)) ** 2)
+        bis_r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+        
+        # Compute Ce propofol validation metrics
+        valid_ce_ppf_mask = ~np.isnan(ce_ppf_observed)
+        ce_ppf_obs_valid = ce_ppf_observed[valid_ce_ppf_mask]
+        ce_ppf_pred_valid = ce_ppf_predicted[valid_ce_ppf_mask]
+        
+        ce_ppf_rmse = np.sqrt(np.mean((ce_ppf_pred_valid - ce_ppf_obs_valid) ** 2))
+        ce_ppf_mae = np.mean(np.abs(ce_ppf_pred_valid - ce_ppf_obs_valid))
+        
+        ss_res_ce = np.sum((ce_ppf_obs_valid - ce_ppf_pred_valid) ** 2)
+        ss_tot_ce = np.sum((ce_ppf_obs_valid - np.mean(ce_ppf_obs_valid)) ** 2)
+        ce_ppf_r2 = 1 - (ss_res_ce / ss_tot_ce) if ss_tot_ce > 0 else 0.0
+        
+        metrics = {
+            'bis_rmse': bis_rmse,
+            'bis_mae': bis_mae,
+            'bis_r2': bis_r2,
+            'ce_ppf_rmse': ce_ppf_rmse,
+            'ce_ppf_mae': ce_ppf_mae,
+            'ce_ppf_r2': ce_ppf_r2,
+        }
+        
+        # Add remifentanil metrics if available
+        if ce_rftn_observed is not None:
+            valid_ce_rftn_mask = ~np.isnan(ce_rftn_observed)
+            ce_rftn_obs_valid = ce_rftn_observed[valid_ce_rftn_mask]
+            ce_rftn_pred_valid = ce_rftn_predicted[valid_ce_rftn_mask]
+            
+            ce_rftn_rmse = np.sqrt(np.mean((ce_rftn_pred_valid - ce_rftn_obs_valid) ** 2))
+            ce_rftn_mae = np.mean(np.abs(ce_rftn_pred_valid - ce_rftn_obs_valid))
+            
+            ss_res_rftn = np.sum((ce_rftn_obs_valid - ce_rftn_pred_valid) ** 2)
+            ss_tot_rftn = np.sum((ce_rftn_obs_valid - np.mean(ce_rftn_obs_valid)) ** 2)
+            ce_rftn_r2 = 1 - (ss_res_rftn / ss_tot_rftn) if ss_tot_rftn > 0 else 0.0
+            
+            metrics['ce_rftn_rmse'] = ce_rftn_rmse
+            metrics['ce_rftn_mae'] = ce_rftn_mae
+            metrics['ce_rftn_r2'] = ce_rftn_r2
+        
+        return metrics
 
 
 def create_patient_population(

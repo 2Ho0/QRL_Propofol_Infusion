@@ -22,11 +22,22 @@ import gymnasium as gym
 from gymnasium import spaces
 from typing import Optional, Tuple, Dict
 from dataclasses import dataclass
+from collections import deque
+
+# Import PatientSimulator as the physics engine
+from .patient_simulator import PatientSimulator, BISModelType, DrugInteractionParams
+from models.pharmacokinetics import PatientParameters
 
 
 @dataclass
-class PatientParameters:
-    """Patient-specific parameters for PK/PD models."""
+class DualDrugPatientParams:
+    """
+    Patient-specific computed PK/PD parameters for dual drug environment.
+    
+    NOTE: This is different from models.pharmacokinetics.PatientParameters,
+    which stores basic demographics. This class stores computed volumes,
+    clearances, and rate constants for both drugs.
+    """
     # Demographics
     age: float  # years
     weight: float  # kg
@@ -61,7 +72,7 @@ def create_patient_parameters(
     height: float = 170.0,
     gender: int = 1,
     variability: float = 0.2
-) -> PatientParameters:
+) -> DualDrugPatientParams:
     """
     Create patient-specific PK/PD parameters with inter-individual variability.
     
@@ -73,7 +84,7 @@ def create_patient_parameters(
         variability: Coefficient of variation for parameters
     
     Returns:
-        PatientParameters with computed PK/PD parameters
+        DualDrugPatientParams with computed PK/PD parameters
     """
     # Lean body mass (LBM) for Schnider model
     if gender == 1:  # Male
@@ -110,7 +121,7 @@ def create_patient_parameters(
     # Interaction strength (synergistic effect)
     interaction_strength = np.random.uniform(0.3, 0.5)  # Moderate synergy
     
-    return PatientParameters(
+    return DualDrugPatientParams(
         age=age,
         weight=weight,
         height=height,
@@ -160,7 +171,8 @@ class DualDrugEnv(gym.Env):
         bis_noise_std: float = 2.0,
         max_steps: int = 200,
         dt: float = 1.0,
-        patient_params: Optional[PatientParameters] = None,
+        patient_params: Optional[DualDrugPatientParams] = None,
+        patient: Optional[PatientParameters] = None,
         seed: Optional[int] = None
     ):
         """
@@ -171,8 +183,13 @@ class DualDrugEnv(gym.Env):
             bis_noise_std: Standard deviation of BIS measurement noise
             max_steps: Maximum episode length (minutes)
             dt: Time step (minutes)
-            patient_params: Patient-specific parameters
+            patient_params: Legacy patient-specific parameters (deprecated)
+            patient: PatientParameters object (preferred)
             seed: Random seed
+        
+        Note:
+            This environment now uses PatientSimulator as the internal physics engine
+            for accurate PK/PD simulation using ODE integration.
         """
         super().__init__()
         
@@ -199,13 +216,40 @@ class DualDrugEnv(gym.Env):
             dtype=np.float32
         )
         
-        # Patient parameters
-        if patient_params is None:
-            self.patient = create_patient_parameters()
-        else:
+        # Create patient for PatientSimulator
+        if patient is not None:
+            self.patient_obj = patient
+        elif patient_params is not None:
+            # Convert legacy DualDrugPatientParams to PatientParameters
+            self.patient_obj = PatientParameters(
+                age=patient_params.age,
+                weight=patient_params.weight,
+                height=patient_params.height,
+                gender='male' if patient_params.gender == 1 else 'female'
+            )
+            # Keep legacy params for backward compatibility
             self.patient = patient_params
+        else:
+            # Create default patient
+            self.patient_obj = PatientParameters()
         
-        # PK/PD state variables
+        # Initialize PatientSimulator as the physics engine
+        self.simulator = PatientSimulator(
+            patient=self.patient_obj,
+            dt=dt * 60,  # Convert minutes to seconds for simulator
+            noise_std=bis_noise_std,
+            seed=seed,
+            bis_model_type=BISModelType.DRUG_INTERACTION,
+            drug_interaction_params=DrugInteractionParams(
+                bis0=98.0,
+                c50_ppf=4.47,
+                c50_rftn=19.3,
+                gamma=1.43,
+                noise_std=bis_noise_std
+            )
+        )
+        
+        # Initialize state tracking
         self.reset()
     
     def reset(
@@ -219,21 +263,11 @@ class DualDrugEnv(gym.Env):
         # Reset time
         self.current_step = 0
         
-        # Initial PK/PD state (all concentrations start at 0)
-        # Propofol compartments: C1, C2, C3, Ce
-        self.c1_ppf = 0.0
-        self.c2_ppf = 0.0
-        self.c3_ppf = 0.0
-        self.ce_ppf = 0.0
+        # Reset PatientSimulator (physics engine)
+        simulator_state = self.simulator.reset()
         
-        # Remifentanil compartments: C1, C2, C3, Ce
-        self.c1_rftn = 0.0
-        self.c2_rftn = 0.0
-        self.c3_rftn = 0.0
-        self.ce_rftn = 0.0
-        
-        # Initial BIS (awake state)
-        self.bis = 95.0
+        # Get initial BIS from simulator
+        self.bis = self.simulator.get_bis()
         self.bis_history = [self.bis]
         
         # Previous actions
@@ -275,11 +309,21 @@ class DualDrugEnv(gym.Env):
         action = np.clip(action, self.action_space.low, self.action_space.high)
         ppf_rate, rftn_rate = action
         
-        # Update PK/PD models
-        self._update_pk_pd(ppf_rate, rftn_rate)
+        # Update physics using PatientSimulator
+        # Convert mg/kg/h to mg/kg/min for propofol
+        ppf_rate_per_min = ppf_rate / 60.0
+        rftn_rate_per_min = rftn_rate  # Already in μg/kg/min
         
-        # Compute BIS from drug interaction
-        self._compute_bis()
+        # PatientSimulator.step expects rates in units per minute
+        # It internally handles time step (dt) conversion
+        simulator_state, bis_value = self.simulator.step(
+            infusion_rate=ppf_rate_per_min,  # mg/kg/min
+            dt=self.dt * 60,  # Convert minutes to seconds
+            rftn_rate=rftn_rate_per_min  # μg/kg/min
+        )
+        
+        # Get BIS from simulator
+        self.bis = bis_value
         
         # Update history
         self.bis_history.append(self.bis)
@@ -305,94 +349,8 @@ class DualDrugEnv(gym.Env):
         
         return obs, reward, terminated, truncated, info
     
-    def _update_pk_pd(self, ppf_rate: float, rftn_rate: float):
-        """
-        Update pharmacokinetic/pharmacodynamic models.
-        
-        Uses 3-compartment models for both drugs with effect-site equilibration.
-        """
-        # Convert rates: propofol mg/kg/h → mg/kg/min, remifentanil μg/kg/min
-        ppf_input = ppf_rate / 60.0  # mg/kg/min
-        rftn_input = rftn_rate  # μg/kg/min
-        
-        # Propofol (Schnider model) - Formulations (1)-(17)
-        # dC1/dt = input/V1 + (Cl2/V1)(C2-C1) + (Cl3/V1)(C3-C1) - (Cl1/V1)C1
-        dc1_ppf = (
-            ppf_input / self.patient.v1_ppf +
-            (self.patient.cl2_ppf / self.patient.v1_ppf) * (self.c2_ppf - self.c1_ppf) +
-            (self.patient.cl3_ppf / self.patient.v1_ppf) * (self.c3_ppf - self.c1_ppf) -
-            (self.patient.cl1_ppf / self.patient.v1_ppf) * self.c1_ppf
-        )
-        
-        dc2_ppf = (self.patient.cl2_ppf / self.patient.v2_ppf) * (self.c1_ppf - self.c2_ppf)
-        dc3_ppf = (self.patient.cl3_ppf / self.patient.v3_ppf) * (self.c1_ppf - self.c3_ppf)
-        dce_ppf = self.patient.ke0_ppf * (self.c1_ppf - self.ce_ppf)
-        
-        # Update propofol concentrations
-        self.c1_ppf += dc1_ppf * self.dt
-        self.c2_ppf += dc2_ppf * self.dt
-        self.c3_ppf += dc3_ppf * self.dt
-        self.ce_ppf += dce_ppf * self.dt
-        
-        # Remifentanil (Minto model) - Formulations (18)-(29)
-        # Similar structure but different parameters
-        dc1_rftn = (
-            rftn_input / self.patient.v1_rftn +
-            (self.patient.cl2_rftn / self.patient.v1_rftn) * (self.c2_rftn - self.c1_rftn) +
-            (self.patient.cl3_rftn / self.patient.v1_rftn) * (self.c3_rftn - self.c1_rftn) -
-            (self.patient.cl1_rftn / self.patient.v1_rftn) * self.c1_rftn
-        )
-        
-        dc2_rftn = (self.patient.cl2_rftn / self.patient.v2_rftn) * (self.c1_rftn - self.c2_rftn)
-        dc3_rftn = (self.patient.cl3_rftn / self.patient.v3_rftn) * (self.c1_rftn - self.c3_rftn)
-        dce_rftn = self.patient.ke0_rftn * (self.c1_rftn - self.ce_rftn)
-        
-        # Update remifentanil concentrations
-        self.c1_rftn += dc1_rftn * self.dt
-        self.c2_rftn += dc2_rftn * self.dt
-        self.c3_rftn += dc3_rftn * self.dt
-        self.ce_rftn += dce_rftn * self.dt
-    
-    def _compute_bis(self):
-        """
-        Compute BIS from drug interaction model.
-        
-        Based on formulation (32): Synergistic drug interaction
-        BIS = f(Ce_propofol, Ce_remifentanil, interaction_strength)
-        
-        Models:
-        1. Independent effect: Each drug reduces BIS separately
-        2. Synergistic effect: Combined effect > sum of individual effects
-        """
-        # Individual effects (Hill equation)
-        # E_max = 98, E_0 = 0, EC50_ppf = 4.47, EC50_rftn = 19.3
-        e_max = 98.0
-        ec50_ppf = 4.47  # μg/mL for propofol
-        ec50_rftn = 19.3  # ng/mL for remifentanil (0.0193 μg/mL)
-        gamma = 1.43  # Hill coefficient
-        
-        # Individual effects
-        if self.ce_ppf > 0:
-            effect_ppf = (self.ce_ppf / ec50_ppf) ** gamma
-        else:
-            effect_ppf = 0.0
-        
-        if self.ce_rftn > 0:
-            effect_rftn = (self.ce_rftn / ec50_rftn) ** gamma
-        else:
-            effect_rftn = 0.0
-        
-        # Synergistic interaction model
-        # U = effect_ppf + effect_rftn + α * effect_ppf * effect_rftn
-        interaction = self.patient.interaction_strength
-        combined_effect = effect_ppf + effect_rftn + interaction * effect_ppf * effect_rftn
-        
-        # BIS calculation
-        bis_true = e_max / (1 + combined_effect)
-        
-        # Add measurement noise
-        noise = np.random.normal(0, self.bis_noise_std)
-        self.bis = np.clip(bis_true + noise, 0, 100)
+    # Note: _update_pk_pd and _compute_bis are now handled by PatientSimulator
+    # This eliminates code duplication and uses accurate ODE integration
     
     def _compute_reward(self, ppf_rate: float, rftn_rate: float) -> float:
         """
@@ -445,6 +403,10 @@ class DualDrugEnv(gym.Env):
         [8] BIS slope (3-min linear fit)
         [9] Interaction factor
         """
+        # Get effect-site concentrations from simulator
+        ce_ppf = self.simulator.state_ppf[3]  # Effect-site concentration (index 3)
+        ce_rftn = self.simulator.state_rftn[3]  # Effect-site concentration
+        
         # BIS error
         bis_error = self.target_bis - self.bis
         
@@ -466,13 +428,13 @@ class DualDrugEnv(gym.Env):
         else:
             bis_slope = 0.0
         
-        # Interaction factor (current synergy level)
-        interaction_factor = self.patient.interaction_strength
+        # Interaction factor from drug interaction params
+        interaction_factor = self.simulator.drug_interaction_params.gamma
         
         state = np.array([
             bis_error,
-            self.ce_ppf,
-            self.ce_rftn,
+            ce_ppf,
+            ce_rftn,
             dbis_dt,
             self.prev_action_ppf,
             self.prev_action_rftn,
@@ -488,26 +450,27 @@ class DualDrugEnv(gym.Env):
         """Get additional information."""
         return {
             'bis': self.bis,
-            'ce_propofol': self.ce_ppf,
-            'ce_remifentanil': self.ce_rftn,
+            'ce_propofol': self.simulator.state_ppf[3],
+            'ce_remifentanil': self.simulator.state_rftn[3],
+            'c1_propofol': self.simulator.state_ppf[0],
+            'c1_remifentanil': self.simulator.state_rftn[0],
             'step': self.current_step,
-            'patient_age': self.patient.age,
-            'patient_weight': self.patient.weight
+            'patient_age': self.patient_obj.age,
+            'patient_weight': self.patient_obj.weight,
+            'simulator': 'PatientSimulator (ODE-based)'
         }
     
     def render(self):
         """Render environment (text-based)."""
         if self.current_step % 10 == 0:  # Print every 10 steps
+            ce_ppf = self.simulator.state_ppf[3]
+            ce_rftn = self.simulator.state_rftn[3]
             print(f"Step {self.current_step:3d} | "
                   f"BIS: {self.bis:5.1f} | "
-                  f"Ce_PPF: {self.ce_ppf:5.2f} | "
-                  f"Ce_RFTN: {self.ce_rftn:5.2f} | "
+                  f"Ce_PPF: {ce_ppf:5.2f} | "
+                  f"Ce_RFTN: {ce_rftn:5.2f} | "
                   f"PPF: {self.prev_action_ppf:5.1f} | "
                   f"RFTN: {self.prev_action_rftn:5.1f}")
-
-
-# Import deque for tracking
-from collections import deque
 
 
 # Test function

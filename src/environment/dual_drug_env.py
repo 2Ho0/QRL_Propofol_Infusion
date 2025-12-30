@@ -157,7 +157,8 @@ class DualDrugEnv(gym.Env):
         - remifentanil_rate: 0-50 μg/kg/min
     
     Observation Space:
-        Box(10): Extended state with dual drug information
+        Box(13): Extended state with dual drug information + patient demographics
+        - Includes: BIS, drug concentrations, derivatives, accumulations, age, sex, BMI
     
     Reward:
         Based on BIS error, drug consumption, and safety
@@ -208,11 +209,11 @@ class DualDrugEnv(gym.Env):
             dtype=np.float32
         )
         
-        # Observation space: 10D extended state
+        # Observation space: 13D extended state (with patient demographics)
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(10,),
+            shape=(13,),
             dtype=np.float32
         )
         
@@ -391,7 +392,7 @@ class DualDrugEnv(gym.Env):
         """
         Get current observation (state).
         
-        State vector (10D):
+        State vector (13D):
         [0] BIS error = target_bis - current_bis
         [1] Ce_propofol (effect-site concentration)
         [2] Ce_remifentanil (effect-site concentration)
@@ -402,6 +403,9 @@ class DualDrugEnv(gym.Env):
         [7] RFTN accumulation (1-min sum)
         [8] BIS slope (3-min linear fit)
         [9] Interaction factor
+        [10] Age normalized (age / 100)
+        [11] Sex (0=Female, 1=Male)
+        [12] BMI normalized (bmi / 40)
         """
         # Get effect-site concentrations from simulator
         ce_ppf = self.simulator.state_ppf[3]  # Effect-site concentration (index 3)
@@ -431,6 +435,14 @@ class DualDrugEnv(gym.Env):
         # Interaction factor from drug interaction params
         interaction_factor = self.simulator.drug_interaction_params.gamma
         
+        # Patient demographics (normalized)
+        age_norm = self.patient_obj.age / 100.0  # 0-100 years → 0-1
+        sex_numeric = 1.0 if self.patient_obj.gender == 'male' else 0.0
+        # Compute BMI
+        height_m = self.patient_obj.height / 100.0
+        bmi = self.patient_obj.weight / (height_m ** 2)
+        bmi_norm = bmi / 40.0  # 15-40 BMI → 0.375-1.0
+        
         state = np.array([
             bis_error,
             ce_ppf,
@@ -441,7 +453,10 @@ class DualDrugEnv(gym.Env):
             ppf_acc,
             rftn_acc,
             bis_slope,
-            interaction_factor
+            interaction_factor,
+            age_norm,
+            sex_numeric,
+            bmi_norm
         ], dtype=np.float32)
         
         return state

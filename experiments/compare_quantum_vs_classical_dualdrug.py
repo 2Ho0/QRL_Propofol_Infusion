@@ -7,8 +7,8 @@ Compare Quantum and Classical agents on dual drug environment
 
 Key differences from single drug comparison:
 - Action space: [propofol_rate, remifentanil_rate] (2D)
-- State space: Extended to include remifentanil Ce (10D)
-- Agents: action_dim=2 instead of 1
+- State space: Extended to include remifentanil Ce + demographics (13D)
+- Agents: action_dim=2, n_qubits=3 (increased for 13D state)
 
 Usage:
     # Full comparison
@@ -39,6 +39,8 @@ from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
+import csv
+import pandas as pd
 
 # Use relative imports (we're in experiments/ directory)
 import sys
@@ -59,26 +61,44 @@ def parse_args():
     )
     
     # VitalDB data
-    parser.add_argument('--n_cases', type=int, default=100,
+    parser.add_argument('--n_cases', type=int, default=1000,
                        help='Number of VitalDB dual drug cases to load')
-    parser.add_argument('--offline_epochs', type=int, default=50,
+    parser.add_argument('--sampling_interval', type=int, default=1,
+                       help='Sampling interval for VitalDB data (1=all data, 5=every 5 seconds)')
+    parser.add_argument('--offline_epochs', type=int, default=100,
                        help='Number of offline pre-training epochs')
     parser.add_argument('--batch_size', type=int, default=256,
                        help='Batch size for offline training')
+    parser.add_argument('--num_workers', type=int, default=4,
+                       help='Number of DataLoader workers for parallel loading')
     parser.add_argument('--bc_weight', type=float, default=1.0,
                        help='Behavioral cloning weight')
     
+    # CQL (Conservative Q-Learning) parameters
+    parser.add_argument('--use_cql', action='store_true',
+                       help='Use CQL instead of standard off-policy RL')
+    parser.add_argument('--cql_alpha', type=float, default=1.0,
+                       help='CQL penalty weight')
+    parser.add_argument('--cql_temp', type=float, default=1.0,
+                       help='Temperature for CQL logsumexp')
+    parser.add_argument('--cql_num_random', type=int, default=5,
+                       help='Number of random actions for CQL penalty')
+    parser.add_argument('--cql_warmup_epochs', type=int, default=50,
+                       help='Number of epochs to use CQL penalty (after this, only BC+RL)')
+    
     # Training
-    parser.add_argument('--online_episodes', type=int, default=500,
+    parser.add_argument('--online_episodes', type=int, default=200,
                        help='Number of online training episodes')
     parser.add_argument('--warmup_episodes', type=int, default=50,
                        help='Warmup episodes before exploration')
     
     # Agent (dual drug specific)
-    parser.add_argument('--state_dim', type=int, default=10,
-                       help='State dimension for dual drug (extended)')
+    parser.add_argument('--state_dim', type=int, default=13,
+                       help='State dimension for dual drug (extended with demographics: age, sex, BMI)')
     parser.add_argument('--action_dim', type=int, default=2,
                        help='Action dimension (propofol + remifentanil)')
+    parser.add_argument('--n_qubits', type=int, default=3,
+                       help='Number of qubits for quantum circuit (3 qubits for 13D state)')
     parser.add_argument('--encoder', type=str, default='none',
                        choices=['none', 'lstm', 'transformer'],
                        help='Temporal encoder type')
@@ -113,7 +133,7 @@ def evaluate_agent_on_simulator_dualdrug(
     Key differences:
     - DualDrugEnv instead of PropofolEnv
     - Action is 2D: [propofol_rate, remifentanil_rate]
-    - State is 10D (includes remifentanil Ce)
+    - State is 13D (includes remifentanil Ce + patient demographics)
     """
     patients = create_patient_population(n_patients=n_episodes, seed=seed)
     
@@ -149,7 +169,10 @@ def evaluate_agent_on_simulator_dualdrug(
                     encoded = agent.encoder(states_seq)
                     if isinstance(encoded, tuple):
                         encoded = encoded[0]
-                    action = agent.actor(encoded[:, -1, :])
+                    # Handle both 2D and 3D encoder outputs
+                    if encoded.dim() == 3:
+                        encoded = encoded[:, -1, :]
+                    action = agent.actor(encoded)
                 else:
                     action = agent.actor(state_tensor)
             
@@ -177,9 +200,20 @@ def evaluate_agent_on_simulator_dualdrug(
             if done or truncated:
                 break
         
-        # Get metrics
-        metrics = env.get_episode_metrics()
-        mdapes.append(metrics.get('mdape', 0))
+        # Get metrics if available
+        if hasattr(env, 'get_episode_metrics'):
+            metrics = env.get_episode_metrics()
+            mdapes.append(metrics.get('mdape', 0))
+        else:
+            # Calculate MDAPE manually from BIS error if metrics not available
+            if bis_history:
+                bis_array = np.array(bis_history)
+                target_bis = 50
+                mdape = np.mean(np.abs(bis_array - target_bis) / target_bis) * 100
+                mdapes.append(mdape)
+            else:
+                mdapes.append(0)
+        
         rewards_total.append(episode_reward)
         propofol_usage.append(np.mean(episode_ppf))
         remifentanil_usage.append(np.mean(episode_rftn))
@@ -205,28 +239,165 @@ def evaluate_agent_on_simulator_dualdrug(
     }
 
 
+def save_results_to_csv(
+    quantum_results: Dict,
+    classical_results: Dict,
+    stats_results: Dict,
+    save_dir: Path
+) -> None:
+    """
+    Save comparison results to CSV files for later analysis.
+    
+    Args:
+        quantum_results: Quantum agent evaluation results
+        classical_results: Classical agent evaluation results
+        stats_results: Statistical comparison results
+        save_dir: Directory to save CSV files
+    """
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 1. Summary statistics CSV
+    summary_data = {
+        'Agent': ['Quantum', 'Classical'],
+        'MDAPE_mean': [quantum_results['mdape_mean'], classical_results['mdape_mean']],
+        'MDAPE_std': [quantum_results['mdape_std'], classical_results['mdape_std']],
+        'Reward_mean': [quantum_results['reward_mean'], classical_results['reward_mean']],
+        'Reward_std': [quantum_results['reward_std'], classical_results['reward_std']],
+        'Propofol_mean': [quantum_results['propofol_usage_mean'], classical_results['propofol_usage_mean']],
+        'Propofol_std': [quantum_results['propofol_usage_std'], classical_results['propofol_usage_std']],
+        'Remifentanil_mean': [quantum_results['remifentanil_usage_mean'], classical_results['remifentanil_usage_mean']],
+        'Remifentanil_std': [quantum_results['remifentanil_usage_std'], classical_results['remifentanil_usage_std']],
+        'TimeInTarget_mean': [quantum_results['time_in_target_mean'], classical_results['time_in_target_mean']],
+        'TimeInTarget_std': [quantum_results['time_in_target_std'], classical_results['time_in_target_std']],
+    }
+    df_summary = pd.DataFrame(summary_data)
+    df_summary.to_csv(save_dir / 'summary_statistics.csv', index=False)
+    print(f"✓ Saved summary statistics to {save_dir / 'summary_statistics.csv'}")
+    
+    # 2. Episode-by-episode results CSV
+    n_episodes = len(quantum_results['mdape_list'])
+    episode_data = {
+        'Episode': list(range(1, n_episodes + 1)),
+        'Quantum_MDAPE': quantum_results['mdape_list'],
+        'Classical_MDAPE': classical_results['mdape_list'],
+        'Quantum_Reward': quantum_results['reward_list'],
+        'Classical_Reward': classical_results['reward_list'],
+    }
+    df_episodes = pd.DataFrame(episode_data)
+    df_episodes.to_csv(save_dir / 'episode_results.csv', index=False)
+    print(f"✓ Saved episode results to {save_dir / 'episode_results.csv'}")
+    
+    # 3. Statistical test results CSV
+    stats_data = {
+        'Test': ['t-test', 'Mann-Whitney U', 'Cohen\'s d', 'Mean Difference', 'Winner'],
+        'Statistic': [
+            stats_results['t_statistic'],
+            stats_results['u_statistic'],
+            stats_results['cohens_d'],
+            stats_results['mean_difference'],
+            0
+        ],
+        'P-value': [
+            stats_results['t_pvalue'],
+            stats_results['u_pvalue'],
+            np.nan,
+            np.nan,
+            np.nan
+        ],
+        'Significant': [
+            stats_results['t_significant'],
+            stats_results['u_significant'],
+            np.nan,
+            np.nan,
+            np.nan
+        ],
+        'Notes': [
+            f"Quantum vs Classical MDAPE",
+            f"Non-parametric test",
+            f"Effect size: {stats_results['cohens_d']:.3f}",
+            f"Difference: {stats_results['mean_difference']:.2f}% (95% CI: [{stats_results['ci_95'][0]:.2f}, {stats_results['ci_95'][1]:.2f}])",
+            f"{stats_results['winner']} wins by {abs(stats_results['improvement_pct']):.1f}%"
+        ]
+    }
+    df_stats = pd.DataFrame(stats_data)
+    df_stats.to_csv(save_dir / 'statistical_tests.csv', index=False)
+    print(f"✓ Saved statistical tests to {save_dir / 'statistical_tests.csv'}")
+    
+    # 4. Metadata CSV (experiment configuration)
+    metadata = {
+        'Parameter': ['Timestamp', 'Episodes', 'Mean_Improvement_%', 'Winner', 'Significant'],
+        'Value': [
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            n_episodes,
+            f"{stats_results['improvement_pct']:.2f}",
+            stats_results['winner'],
+            'Yes' if stats_results['t_significant'] else 'No'
+        ]
+    }
+    df_metadata = pd.DataFrame(metadata)
+    df_metadata.to_csv(save_dir / 'experiment_metadata.csv', index=False)
+    print(f"✓ Saved metadata to {save_dir / 'experiment_metadata.csv'}")
+
+
 def statistical_comparison(quantum_results: Dict, classical_results: Dict, 
                           alpha: float = 0.05) -> Dict:
     """Perform statistical significance tests."""
     
+    # Check if we have enough samples for statistical tests
+    n_samples = len(quantum_results['mdape_list'])
+    
+    if n_samples < 2:
+        print(f"⚠️  Warning: Only {n_samples} sample(s). Statistical tests require at least 2 samples.")
+        print(f"   Skipping statistical tests and using simple comparison.")
+        
+        mean_diff = quantum_results['mdape_mean'] - classical_results['mdape_mean']
+        improvement_pct = (classical_results['mdape_mean'] - quantum_results['mdape_mean']) / \
+                         (classical_results['mdape_mean'] + 1e-8) * 100
+        
+        return {
+            't_statistic': np.nan,
+            't_pvalue': np.nan,
+            't_significant': False,
+            'u_statistic': np.nan,
+            'u_pvalue': np.nan,
+            'u_significant': False,
+            'cohens_d': np.nan,
+            'mean_difference': mean_diff,
+            'ci_95': (np.nan, np.nan),
+            'winner': 'Quantum' if mean_diff < 0 else 'Classical',
+            'improvement_pct': improvement_pct,
+            'note': f'Insufficient samples (n={n_samples}) for statistical tests'
+        }
+    
     # Two-sample t-test
-    t_stat, t_pval = stats.ttest_ind(
-        quantum_results['mdape_list'],
-        classical_results['mdape_list']
-    )
+    try:
+        t_stat, t_pval = stats.ttest_ind(
+            quantum_results['mdape_list'],
+            classical_results['mdape_list']
+        )
+    except Exception as e:
+        print(f"⚠️  Warning: t-test failed ({e}). Using NaN.")
+        t_stat, t_pval = np.nan, np.nan
     
     # Mann-Whitney U test (non-parametric)
-    u_stat, u_pval = stats.mannwhitneyu(
-        quantum_results['mdape_list'],
-        classical_results['mdape_list'],
-        alternative='two-sided'
-    )
+    try:
+        u_stat, u_pval = stats.mannwhitneyu(
+            quantum_results['mdape_list'],
+            classical_results['mdape_list'],
+            alternative='two-sided'
+        )
+    except Exception as e:
+        print(f"⚠️  Warning: Mann-Whitney U test failed ({e}). Using NaN.")
+        u_stat, u_pval = np.nan, np.nan
     
     # Effect size (Cohen's d)
     pooled_std = np.sqrt(
         (np.var(quantum_results['mdape_list']) + np.var(classical_results['mdape_list'])) / 2
     )
-    cohens_d = (quantum_results['mdape_mean'] - classical_results['mdape_mean']) / pooled_std
+    # Add epsilon to prevent divide by zero
+    epsilon = 1e-8
+    cohens_d = (quantum_results['mdape_mean'] - classical_results['mdape_mean']) / (pooled_std + epsilon)
     
     # Mean difference and CI
     mean_diff = quantum_results['mdape_mean'] - classical_results['mdape_mean']
@@ -282,10 +453,18 @@ def evaluate_on_vitaldb_test_set(
         
         with torch.no_grad():
             if hasattr(agent, 'encoder') and agent.encoder is not None:
-                # Use encoder if available (simplified - full sequence tracking would be better)
-                hidden = None
-                encoded, hidden = agent.encoder(state_tensor.unsqueeze(0), hidden)
-                action = agent.actor(encoded.squeeze(0))
+                # Create single-step sequence for encoder
+                state_seq = state_tensor.unsqueeze(0)  # [1, 1, state_dim]
+                
+                encoded = agent.encoder(state_seq)
+                if isinstance(encoded, tuple):
+                    encoded = encoded[0]  # Take output, ignore hidden state
+                
+                # Handle both 2D and 3D encoder outputs
+                if encoded.dim() == 3:
+                    encoded = encoded[:, -1, :]  # Get last timestep [batch, encoded_dim]
+                
+                action = agent.actor(encoded)
             else:
                 action = agent.actor(state_tensor)
         
@@ -339,35 +518,51 @@ def plot_dualdrug_comparison(
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     fig.suptitle(title, fontsize=16, fontweight='bold')
     
-    # 1. MDAPE Box Plot
+    # Check if we have enough data for boxplot (need at least 2 points)
+    use_boxplot = len(quantum_results['mdape_list']) >= 2
+    
+    # 1. MDAPE Box Plot (or Bar Plot for small datasets)
     ax = axes[0, 0]
-    data = [quantum_results['mdape_list'], classical_results['mdape_list']]
-    bp = ax.boxplot(data, labels=['Quantum', 'Classical'], patch_artist=True)
-    bp['boxes'][0].set_facecolor('lightblue')
-    bp['boxes'][1].set_facecolor('lightcoral')
+    if use_boxplot:
+        data = [quantum_results['mdape_list'], classical_results['mdape_list']]
+        bp = ax.boxplot(data, tick_labels=['Quantum', 'Classical'], patch_artist=True)
+        bp['boxes'][0].set_facecolor('lightblue')
+        bp['boxes'][1].set_facecolor('lightcoral')
+        ax.plot(1, quantum_results['mdape_mean'], 'D', color='blue', markersize=8, label='Mean')
+        ax.plot(2, classical_results['mdape_mean'], 'D', color='red', markersize=8)
+        ax.legend()
+    else:
+        # Use bar plot for small datasets
+        x_pos = [1, 2]
+        means = [quantum_results['mdape_mean'], classical_results['mdape_mean']]
+        stds = [quantum_results['mdape_std'], classical_results['mdape_std']]
+        ax.bar(x_pos, means, yerr=stds, capsize=5, color=['lightblue', 'lightcoral'], alpha=0.7)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(['Quantum', 'Classical'])
     ax.set_ylabel('MDAPE (%)', fontsize=12)
     ax.set_title('MDAPE Distribution', fontsize=13, fontweight='bold')
     ax.grid(axis='y', alpha=0.3)
     
-    # Add mean markers
-    ax.plot(1, quantum_results['mdape_mean'], 'D', color='blue', markersize=8, label='Mean')
-    ax.plot(2, classical_results['mdape_mean'], 'D', color='red', markersize=8)
-    ax.legend()
-    
-    # 2. Reward Box Plot
+    # 2. Reward Box Plot (or Bar Plot)
     ax = axes[0, 1]
-    data = [quantum_results['reward_list'], classical_results['reward_list']]
-    bp = ax.boxplot(data, labels=['Quantum', 'Classical'], patch_artist=True)
-    bp['boxes'][0].set_facecolor('lightblue')
-    bp['boxes'][1].set_facecolor('lightcoral')
+    if use_boxplot:
+        data = [quantum_results['reward_list'], classical_results['reward_list']]
+        bp = ax.boxplot(data, tick_labels=['Quantum', 'Classical'], patch_artist=True)
+        bp['boxes'][0].set_facecolor('lightblue')
+        bp['boxes'][1].set_facecolor('lightcoral')
+        ax.plot(1, quantum_results['reward_mean'], 'D', color='blue', markersize=8, label='Mean')
+        ax.plot(2, classical_results['reward_mean'], 'D', color='red', markersize=8)
+        ax.legend()
+    else:
+        x_pos = [1, 2]
+        means = [quantum_results['reward_mean'], classical_results['reward_mean']]
+        stds = [quantum_results['reward_std'], classical_results['reward_std']]
+        ax.bar(x_pos, means, yerr=stds, capsize=5, color=['lightblue', 'lightcoral'], alpha=0.7)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(['Quantum', 'Classical'])
     ax.set_ylabel('Total Reward', fontsize=12)
     ax.set_title('Reward Distribution', fontsize=13, fontweight='bold')
     ax.grid(axis='y', alpha=0.3)
-    
-    # Add mean markers
-    ax.plot(1, quantum_results['reward_mean'], 'D', color='blue', markersize=8, label='Mean')
-    ax.plot(2, classical_results['reward_mean'], 'D', color='red', markersize=8)
-    ax.legend()
     
     # 3. Propofol Usage
     ax = axes[0, 2]
@@ -390,29 +585,45 @@ def plot_dualdrug_comparison(
     
     # 4. MDAPE Histogram
     ax = axes[1, 0]
-    ax.hist(quantum_results['mdape_list'], bins=20, alpha=0.6, label='Quantum', color='blue')
-    ax.hist(classical_results['mdape_list'], bins=20, alpha=0.6, label='Classical', color='red')
-    ax.axvline(quantum_results['mdape_mean'], color='blue', linestyle='--', linewidth=2)
-    ax.axvline(classical_results['mdape_mean'], color='red', linestyle='--', linewidth=2)
+    if use_boxplot:
+        # Only create histogram if we have enough data
+        n_bins = min(20, len(quantum_results['mdape_list']))
+        ax.hist(quantum_results['mdape_list'], bins=n_bins, alpha=0.6, label='Quantum', color='blue')
+        ax.hist(classical_results['mdape_list'], bins=n_bins, alpha=0.6, label='Classical', color='red')
+        ax.axvline(quantum_results['mdape_mean'], color='blue', linestyle='--', linewidth=2)
+        ax.axvline(classical_results['mdape_mean'], color='red', linestyle='--', linewidth=2)
+        ax.legend()
+    else:
+        # For single data point, show as scatter
+        ax.scatter([quantum_results['mdape_mean']], [1], s=200, alpha=0.6, label='Quantum', color='blue')
+        ax.scatter([classical_results['mdape_mean']], [1], s=200, alpha=0.6, label='Classical', color='red')
+        ax.set_ylim(0, 2)
+        ax.legend()
     ax.set_xlabel('MDAPE (%)', fontsize=12)
     ax.set_ylabel('Frequency', fontsize=12)
     ax.set_title('MDAPE Histogram', fontsize=13, fontweight='bold')
-    ax.legend()
     ax.grid(alpha=0.3)
     
     # 5. Cumulative Distribution
     ax = axes[1, 1]
-    quantum_sorted = np.sort(quantum_results['mdape_list'])
-    classical_sorted = np.sort(classical_results['mdape_list'])
-    quantum_cdf = np.arange(1, len(quantum_sorted) + 1) / len(quantum_sorted)
-    classical_cdf = np.arange(1, len(classical_sorted) + 1) / len(classical_sorted)
-    
-    ax.plot(quantum_sorted, quantum_cdf, label='Quantum', color='blue', linewidth=2)
-    ax.plot(classical_sorted, classical_cdf, label='Classical', color='red', linewidth=2)
+    if use_boxplot:
+        quantum_sorted = np.sort(quantum_results['mdape_list'])
+        classical_sorted = np.sort(classical_results['mdape_list'])
+        quantum_cdf = np.arange(1, len(quantum_sorted) + 1) / len(quantum_sorted)
+        classical_cdf = np.arange(1, len(classical_sorted) + 1) / len(classical_sorted)
+        
+        ax.plot(quantum_sorted, quantum_cdf, label='Quantum', color='blue', linewidth=2)
+        ax.plot(classical_sorted, classical_cdf, label='Classical', color='red', linewidth=2)
+        ax.legend()
+    else:
+        # For single data point, show as step function
+        ax.scatter([quantum_results['mdape_mean']], [1.0], s=200, label='Quantum', color='blue', marker='o')
+        ax.scatter([classical_results['mdape_mean']], [1.0], s=200, label='Classical', color='red', marker='s')
+        ax.set_ylim(0, 1.2)
+        ax.legend()
     ax.set_xlabel('MDAPE (%)', fontsize=12)
     ax.set_ylabel('Cumulative Probability', fontsize=12)
     ax.set_title('Cumulative Distribution', fontsize=13, fontweight='bold')
-    ax.legend()
     ax.grid(alpha=0.3)
     
     # 6. Remifentanil Usage
@@ -466,6 +677,15 @@ def main():
         config = yaml.safe_load(f)
     config['device'] = str(device)
     
+    # Override config for dual drug control
+    config['state_dim'] = args.state_dim
+    config['action_dim'] = args.action_dim
+    config['quantum']['n_qubits'] = args.n_qubits
+    print(f"\n🔧 Config overrides for dual drug:")
+    print(f"  state_dim: {config['state_dim']}")
+    print(f"  action_dim: {config['action_dim']}")
+    print(f"  n_qubits: {config['quantum']['n_qubits']}")
+    
     # Setup directory
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     comparison_dir = Path(args.log_dir) / f'comparison_dualdrug_{timestamp}'
@@ -477,6 +697,7 @@ def main():
     print(f"Configuration:")
     print(f"  State dim: {args.state_dim}")
     print(f"  Action dim: {args.action_dim} (propofol + remifentanil)")
+    print(f"  Quantum qubits: {args.n_qubits}")
     print(f"  VitalDB cases: {args.n_cases}")
     print(f"  Offline epochs: {args.offline_epochs}")
     print(f"  Online episodes: {args.online_episodes}")
@@ -498,11 +719,47 @@ def main():
     )
     
     print(f"\nLoading {args.n_cases} dual drug cases from VitalDB...")
+    print(f"Sampling interval: {args.sampling_interval}s (1=all data, higher=faster)")
+    
+    # Try loading with more relaxed criteria if n_cases is small
+    min_duration = 300 if args.n_cases <= 10 else 1800  # 5 min for testing, 30 min for training
+    print(f"Using min_duration: {min_duration}s ({min_duration/60:.1f} min)")
+    
     states, actions, next_states, rewards, dones = loader.prepare_dual_drug_training_data(
         n_cases=args.n_cases,
-        min_duration=1800,
+        min_duration=min_duration,
+        sampling_interval=args.sampling_interval,
         save_path=comparison_dir / 'vitaldb_dual_drug.pkl'
     )
+    
+    # Debug: Print raw data info
+    print(f"\n🔍 DEBUG - Raw data info:")
+    print(f"  states type: {type(states)}, shape: {states.shape if hasattr(states, 'shape') else 'N/A'}")
+    print(f"  actions type: {type(actions)}, shape: {actions.shape if hasattr(actions, 'shape') else 'N/A'}")
+    print(f"  next_states type: {type(next_states)}, shape: {next_states.shape if hasattr(next_states, 'shape') else 'N/A'}")
+    print(f"  rewards type: {type(rewards)}, shape: {rewards.shape if hasattr(rewards, 'shape') else 'N/A'}")
+    print(f"  dones type: {type(dones)}, shape: {dones.shape if hasattr(dones, 'shape') else 'N/A'}")
+    
+    # Check if data is empty
+    if len(states) == 0:
+        raise ValueError(f"No data loaded! VitalDB loader returned empty arrays. "
+                        f"Check if cases with dual drug data exist and meet the criteria.")
+    
+    # Validate dimensions with better error messages
+    if len(states.shape) != 2:
+        raise ValueError(f"Expected states to be 2D array, got shape {states.shape}. "
+                        f"This might indicate data loading failed.")
+    
+    if states.shape[1] != args.state_dim:
+        raise ValueError(f"State dimension mismatch! Expected {args.state_dim}, got {states.shape[1]}. "
+                        f"Make sure VitalDB loader's _extract_dual_drug_state() returns 13D state.")
+    
+    if actions.shape[1] != args.action_dim:
+        raise ValueError(f"Action dimension mismatch! Expected {args.action_dim}, got {actions.shape[1]}. "
+                        f"Dual drug should have 2D actions [propofol, remifentanil].")
+    
+    if next_states.shape[1] != args.state_dim:
+        raise ValueError(f"Next state dimension mismatch! Expected {args.state_dim}, got {next_states.shape[1]}.")
     
     print(f"\n✓ Loaded dual drug data:")
     print(f"  States shape: {states.shape}")
@@ -545,6 +802,14 @@ def main():
         'dones': dones[val_indices]
     }
     
+    # Debug: Print shapes
+    print(f"\nTraining data shapes:")
+    print(f"  States: {train_data_dict['states'].shape}")
+    print(f"  Actions: {train_data_dict['actions'].shape}")
+    print(f"  Next states: {train_data_dict['next_states'].shape}")
+    print(f"  Rewards: {train_data_dict['rewards'].shape}")
+    print(f"  Dones: {train_data_dict['dones'].shape}")
+    
     print(f"\nData split:")
     print(f"  Train: {len(train_indices):,} samples")
     print(f"  Val: {len(val_indices):,} samples")
@@ -566,7 +831,7 @@ def main():
         seed=args.seed
     )
     
-    # Move to device
+    # Move to device FIRST
     quantum_agent.actor = quantum_agent.actor.to(device)
     quantum_agent.actor_target = quantum_agent.actor_target.to(device)
     quantum_agent.critic = quantum_agent.critic.to(device)
@@ -574,6 +839,36 @@ def main():
     if quantum_agent.encoder is not None:
         quantum_agent.encoder = quantum_agent.encoder.to(device)
         quantum_agent.encoder_target = quantum_agent.encoder_target.to(device)
+    
+    # DEBUG: Check actor output dimension (after moving to device)
+    test_state = torch.randn(1, args.state_dim).to(device)
+    with torch.no_grad():
+        # Use encoder if available
+        if quantum_agent.encoder is not None:
+            # For LSTM/Transformer, we need a sequence
+            test_state_seq = test_state.unsqueeze(0)  # [1, seq_len=1, state_dim]
+            test_encoded = quantum_agent.encoder(test_state_seq)
+            if isinstance(test_encoded, tuple):  # LSTM returns (output, hidden)
+                test_encoded = test_encoded[0]
+            # Get last timestep output
+            test_encoded = test_encoded[:, -1, :] if test_encoded.dim() == 3 else test_encoded
+            test_action = quantum_agent.actor(test_encoded)
+        else:
+            test_action = quantum_agent.actor(test_state)
+    print(f"\n🔍 DEBUG - Quantum Actor Check:")
+    print(f"  Input state shape: {test_state.shape}")
+    if quantum_agent.encoder is not None:
+        print(f"  Encoded state shape: {test_encoded.shape}")
+        print(f"  Expected encoded shape: torch.Size([1, {quantum_agent.encoded_dim}])")
+    print(f"  Output action shape: {test_action.shape}")
+    print(f"  Expected action shape: torch.Size([1, {args.action_dim}])")
+    
+    if test_action.shape[1] != args.action_dim:
+        raise ValueError(
+            f"Actor output dimension mismatch! "
+            f"Expected {args.action_dim}D actions, got {test_action.shape[1]}D. "
+            f"Check agent initialization and config."
+        )
     
     quantum_dirs = {
         'base': comparison_dir / 'quantum',
@@ -596,7 +891,13 @@ def main():
         n_epochs=args.offline_epochs,
         batch_size=args.batch_size,
         bc_weight=args.bc_weight,
-        dirs={'save_dir': quantum_dirs['stage1']},
+        use_cql=args.use_cql,
+        cql_alpha=args.cql_alpha,
+        cql_temp=args.cql_temp,
+        cql_num_random=args.cql_num_random,
+        cql_warmup_epochs=args.cql_warmup_epochs,
+        num_workers=args.num_workers,
+        dirs={'stage1': quantum_dirs['stage1']},
         device=device
     )
     
@@ -609,12 +910,12 @@ def main():
     
     quantum_agent = stage2_online_finetuning(
         agent=quantum_agent,
-        env_class=DualDrugEnv,
         n_episodes=args.online_episodes,
         warmup_episodes=args.warmup_episodes,
-        save_dir=quantum_dirs['stage2'],
-        device=device,
-        seed=args.seed
+        dirs={'stage2': quantum_dirs['stage2']},
+        eval_interval=50,
+        seed=args.seed,
+        device=device
     )
     
     print(f"✓ Stage 2 complete: Quantum agent fine-tuned on simulator")
@@ -638,7 +939,7 @@ def main():
         seed=args.seed + 1000
     )
     
-    # Move to device
+    # Move to device FIRST
     classical_agent.actor = classical_agent.actor.to(device)
     classical_agent.actor_target = classical_agent.actor_target.to(device)
     classical_agent.critic = classical_agent.critic.to(device)
@@ -646,6 +947,36 @@ def main():
     if classical_agent.encoder is not None:
         classical_agent.encoder = classical_agent.encoder.to(device)
         classical_agent.encoder_target = classical_agent.encoder_target.to(device)
+    
+    # DEBUG: Check actor output dimension (after moving to device)
+    test_state = torch.randn(1, args.state_dim).to(device)
+    with torch.no_grad():
+        # Use encoder if available
+        if classical_agent.encoder is not None:
+            # For LSTM/Transformer, we need a sequence
+            test_state_seq = test_state.unsqueeze(0)  # [1, seq_len=1, state_dim]
+            test_encoded = classical_agent.encoder(test_state_seq)
+            if isinstance(test_encoded, tuple):  # LSTM returns (output, hidden)
+                test_encoded = test_encoded[0]
+            # Get last timestep output
+            test_encoded = test_encoded[:, -1, :] if test_encoded.dim() == 3 else test_encoded
+            test_action = classical_agent.actor(test_encoded)
+        else:
+            test_action = classical_agent.actor(test_state)
+    print(f"\n🔍 DEBUG - Classical Actor Check:")
+    print(f"  Input state shape: {test_state.shape}")
+    if classical_agent.encoder is not None:
+        print(f"  Encoded state shape: {test_encoded.shape}")
+        print(f"  Expected encoded shape: torch.Size([1, {classical_agent.encoded_dim}])")
+    print(f"  Output action shape: {test_action.shape}")
+    print(f"  Expected action shape: torch.Size([1, {args.action_dim}])")
+    
+    if test_action.shape[1] != args.action_dim:
+        raise ValueError(
+            f"Actor output dimension mismatch! "
+            f"Expected {args.action_dim}D actions, got {test_action.shape[1]}D. "
+            f"Check agent initialization and config."
+        )
     
     classical_dirs = {
         'base': comparison_dir / 'classical',
@@ -668,7 +999,13 @@ def main():
         n_epochs=args.offline_epochs,
         batch_size=args.batch_size,
         bc_weight=args.bc_weight,
-        dirs={'save_dir': classical_dirs['stage1']},
+        use_cql=args.use_cql,
+        cql_alpha=args.cql_alpha,
+        cql_temp=args.cql_temp,
+        cql_num_random=args.cql_num_random,
+        cql_warmup_epochs=args.cql_warmup_epochs,
+        num_workers=args.num_workers,
+        dirs={'stage1': classical_dirs['stage1']},
         device=device
     )
     
@@ -681,12 +1018,12 @@ def main():
     
     classical_agent = stage2_online_finetuning(
         agent=classical_agent,
-        env_class=DualDrugEnv,
         n_episodes=args.online_episodes,
         warmup_episodes=args.warmup_episodes,
-        save_dir=classical_dirs['stage2'],
-        device=device,
-        seed=args.seed + 1000
+        dirs={'stage2': classical_dirs['stage2']},
+        eval_interval=50,
+        seed=args.seed + 1000,
+        device=device
     )
     
     print(f"✓ Stage 2 complete: Classical agent fine-tuned on simulator")
@@ -782,6 +1119,18 @@ def main():
     
     print(f"✓ Results saved to: {comparison_dir / 'results.pkl'}")
     
+    # Save results to CSV files
+    print(f"\n" + "-"*70)
+    print("SAVING RESULTS TO CSV")
+    print("-"*70)
+    
+    save_results_to_csv(
+        quantum_results=quantum_sim_results,
+        classical_results=classical_sim_results,
+        stats_results=stats_results,
+        save_dir=comparison_dir / 'csv_results'
+    )
+    
     # Generate summary report
     print(f"\n" + "-"*70)
     print("GENERATING SUMMARY REPORT")
@@ -876,13 +1225,18 @@ def main():
     print(f"  Classical MDAPE: {classical_sim_results['mdape_mean']:.2f} ± {classical_sim_results['mdape_std']:.2f}%")
     print(f"  Winner: {stats_results['winner']} ({stats_results['improvement_pct']:.2f}% improvement)")
     print(f"  Significant: {'YES' if stats_results['t_significant'] else 'NO'} (p={stats_results['t_pvalue']:.4f})")
-    
-    print(f"\nTime in Target (BIS 45-55):")
-    print(f"  Quantum:   {quantum_sim_results['time_in_target_mean']:.1f}%")
-    print(f"  Classical: {classical_sim_results['time_in_target_mean']:.1f}%")
-    
-    print(f"\nPropofol usage:")
-    print(f"  Quantum:   {quantum_sim_results['propofol_usage_mean']:.2f} ± {quantum_sim_results['propofol_usage_std']:.2f} mg/kg/h")
+
+
+
+
+
+
+
+    print(f"  Quantum:   {quantum_sim_results['propofol_usage_mean']:.2f} ± {quantum_sim_results['propofol_usage_std']:.2f} mg/kg/h")    
+    print(f"\nPropofol usage:")        
+    print(f"  Classical: {classical_sim_results['time_in_target_mean']:.1f}%")    
+    print(f"  Quantum:   {quantum_sim_results['time_in_target_mean']:.1f}%")    
+    print(f"\nTime in Target (BIS 45-55):")        
     print(f"  Classical: {classical_sim_results['propofol_usage_mean']:.2f} ± {classical_sim_results['propofol_usage_std']:.2f} mg/kg/h")
     
     print(f"\nRemifentanil usage:")

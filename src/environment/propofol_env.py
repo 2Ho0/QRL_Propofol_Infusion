@@ -537,7 +537,7 @@ class PropofolEnv(gym.Env):
         ce_ppf = self.simulator.state_ppf[3]
         ce_rftn = self.simulator.state_rftn[3]
         ec50_ppf = self.simulator.ppf_model.params.ec50
-        ec50_rftn = self.simulator.rftn_model.params.ec50
+        ec50_rftn = self.simulator.rftn_model.params.EC50
         
         # Formulation (37): BIS error = BIS - target
         bis_error_norm = (bis - self.bis_target) / 50.0

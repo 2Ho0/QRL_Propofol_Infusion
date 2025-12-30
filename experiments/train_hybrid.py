@@ -214,12 +214,40 @@ def stage1_offline_pretraining(
     bc_weight: float,
     dirs: Dict[str, Path],
     eval_interval: int = 10,
-    device: torch.device = None
+    use_cql: bool = True,
+    cql_alpha: float = 1.0,
+    cql_temp: float = 1.0,
+    cql_num_random: int = 5,
+    cql_warmup_epochs: int = 50,
+    device: torch.device = None,
+    num_workers: int = 4,
+    use_amp: bool = False,
 ) -> QuantumDDPGAgent:
     """
     Stage 1: Offline pre-training on VitalDB train set.
     
-    Uses Behavioral Cloning + Off-policy RL on real patient data.
+    Uses Behavioral Cloning + Off-policy RL (or CQL) on real patient data.
+    
+    Args:
+        agent: Quantum DDPG agent
+        train_data: Training data dictionary
+        val_data: Validation data dictionary
+        n_epochs: Number of training epochs
+        batch_size: Batch size
+        bc_weight: Weight for BC loss (0-1)
+        dirs: Directory paths
+        eval_interval: Evaluation interval
+        use_cql: Use Conservative Q-Learning instead of standard RL
+        cql_alpha: CQL penalty weight
+        cql_temp: Temperature for CQL logsumexp
+        cql_num_random: Number of random actions for CQL
+        cql_warmup_epochs: Number of epochs to use CQL (후반에는 CQL 비활성화)
+        device: Torch device
+        num_workers: Number of data loader workers
+        use_amp: Use Automatic Mixed Precision for faster training
+    
+    Returns:
+        Trained agent
     """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -233,10 +261,19 @@ def stage1_offline_pretraining(
     
     # Create PyTorch datasets
     train_dataset = VitalDBDataset(train_data)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=True
+        )
     
     val_dataset = VitalDBDataset(val_data)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=True
+        )
     
     # Training metrics
     best_val_loss = float('inf')
@@ -246,12 +283,31 @@ def stage1_offline_pretraining(
     print(f"  Epochs: {n_epochs}")
     print(f"  Batch size: {batch_size}")
     print(f"  BC weight: {bc_weight:.2f}")
-    print(f"  RL weight: {1 - bc_weight:.2f}\n")
+    print(f"  RL weight: {1 - bc_weight:.2f}")
+    print(f"  Method: {'CQL (Conservative Q-Learning)' if use_cql else 'Standard Off-policy RL'}")
+    if use_cql:
+        print(f"  CQL alpha: {cql_alpha:.2f}")
+        print(f"  CQL temp: {cql_temp:.2f}")
+        print(f"  CQL random actions: {cql_num_random}")
+        print(f"  CQL warmup epochs: {cql_warmup_epochs} (후반 {n_epochs - cql_warmup_epochs} epochs는 CQL 비활성화)")
+    print(f"  Mixed Precision: {'Enabled' if use_amp and torch.cuda.is_available() else 'Disabled'}")
+    print(f"  Num workers: {num_workers}")
+    print()
+
+    from torch.amp import autocast, GradScaler
+    scaler = GradScaler('cuda') if use_amp and torch.cuda.is_available() else None
+    
+    import time
+    epoch_times = []
     
     for epoch in tqdm(range(n_epochs), desc="Offline Pre-training"):
+        epoch_start = time.time()
         epoch_train_bc = []
         epoch_train_rl = []
         epoch_train_total = []
+        
+        # CQL warmup: 초반에만 CQL 사용
+        use_cql_this_epoch = use_cql and epoch < cql_warmup_epochs
         
         # Training loop
         for batch in train_loader:
@@ -264,59 +320,254 @@ def stage1_offline_pretraining(
             next_states = next_states.float().to(device)
             dones = dones.float().to(device)
             
-            # ========== Behavioral Cloning Loss ==========
-            predicted_actions = agent.actor(states).float()
-            bc_loss = torch.nn.functional.mse_loss(predicted_actions, actions)
+            # ========== Mixed Precision Training ==========
+            if scaler is not None:
+                # Forward pass with autocast
+                with autocast('cuda'):
+                    # ========== Behavioral Cloning Loss ==========
+                    # Use encoder if available
+                    if agent.encoder is not None:
+                        states_seq = states.unsqueeze(1)
+                        encoded_states = agent.encoder(states_seq)
+                        if isinstance(encoded_states, tuple):
+                            encoded_states = encoded_states[0]
+                        encoded_states = encoded_states[:, -1, :] if encoded_states.dim() == 3 else encoded_states
+                        predicted_actions = agent.actor(encoded_states)
+                        
+                        next_states_seq = next_states.unsqueeze(1)
+                        encoded_next = agent.encoder_target(next_states_seq)
+                        if isinstance(encoded_next, tuple):
+                            encoded_next = encoded_next[0]
+                        encoded_next = encoded_next[:, -1, :] if encoded_next.dim() == 3 else encoded_next
+                        next_actions = agent.actor_target(encoded_next)
+                    else:
+                        predicted_actions = agent.actor(states)
+                        next_actions = agent.actor_target(next_states)
+                    
+                    bc_loss = torch.nn.functional.mse_loss(predicted_actions, actions)
+                    
+                    # ========== Off-policy RL Loss ==========
+                    with torch.no_grad():
+                        if agent.encoder is not None:
+                            q1_next, q2_next = agent.critic_target(encoded_next, next_actions)
+                        else:
+                            q1_next, q2_next = agent.critic_target(next_states, next_actions)
+                        target_q = rewards.unsqueeze(1) + agent.gamma * torch.min(q1_next, q2_next) * (1 - dones.unsqueeze(1))
+                    
+                    if agent.encoder is not None:
+                        q1, q2 = agent.critic(encoded_states, actions)
+                    else:
+                        q1, q2 = agent.critic(states, actions)
+                    critic_loss = (
+                        torch.nn.functional.mse_loss(q1, target_q) +
+                        torch.nn.functional.mse_loss(q2, target_q)
+                    ) / 2
+                    
+                    # ========== CQL Penalty (if enabled and in warmup period) ==========
+                    if use_cql_this_epoch:
+                        # Sample random actions
+                        batch_size_cur = states.shape[0]
+                        random_actions = torch.rand(batch_size_cur, cql_num_random, actions.shape[1], device=device)
+                        random_actions = random_actions * 2 - 1  # Scale to [-1, 1]
+                        
+                        # Repeat states for random actions
+                        if agent.encoder is not None:
+                            encoded_states_repeated = encoded_states.unsqueeze(1).repeat(1, cql_num_random, 1)
+                            encoded_states_flat = encoded_states_repeated.reshape(-1, encoded_states.shape[1])
+                        else:
+                            states_repeated = states.unsqueeze(1).repeat(1, cql_num_random, 1)
+                            encoded_states_flat = states_repeated.reshape(-1, states.shape[1])
+                        
+                        random_actions_flat = random_actions.reshape(-1, actions.shape[1])
+                        
+                        # Q-values for random actions
+                        q1_random, q2_random = agent.critic(encoded_states_flat, random_actions_flat)
+                        q1_random = q1_random.reshape(batch_size_cur, cql_num_random)
+                        q2_random = q2_random.reshape(batch_size_cur, cql_num_random)
+                        
+                        # CQL penalty: logsumexp of random Q-values minus data Q-values
+                        cql_penalty = (
+                            torch.logsumexp(q1_random / cql_temp, dim=1).mean() +
+                            torch.logsumexp(q2_random / cql_temp, dim=1).mean() -
+                            q1.mean() - q2.mean()
+                        )
+                        
+                        critic_loss = critic_loss + cql_alpha * cql_penalty
+                
+                # Backward with gradient scaling
+                agent.critic_optimizer.zero_grad()
+                scaler.scale(critic_loss).backward()
+                scaler.unscale_(agent.critic_optimizer)
+                torch.nn.utils.clip_grad_norm_(agent.critic.parameters(), 1.0)
+                scaler.step(agent.critic_optimizer)
+                
+                # Update Actor with AMP
+                agent.actor_optimizer.zero_grad()
+                with autocast('cuda'):
+                    if agent.encoder is not None:
+                        # Recompute encoded states for actor update
+                        states_seq = states.unsqueeze(1)
+                        encoded_states_actor = agent.encoder(states_seq)
+                        if isinstance(encoded_states_actor, tuple):
+                            encoded_states_actor = encoded_states_actor[0]
+                        encoded_states_actor = encoded_states_actor[:, -1, :] if encoded_states_actor.dim() == 3 else encoded_states_actor
+                        pred_actions_for_bc = agent.actor(encoded_states_actor)
+                        pred_actions_for_q = agent.actor(encoded_states_actor)
+                        q1_pred, _ = agent.critic(encoded_states_actor, pred_actions_for_q)
+                    else:
+                        pred_actions_for_bc = agent.actor(states)
+                        pred_actions_for_q = agent.actor(states)
+                        q1_pred, _ = agent.critic(states, pred_actions_for_q)
+                    
+                    bc_loss_final = torch.nn.functional.mse_loss(pred_actions_for_bc, actions)
+                    actor_rl_loss = -q1_pred.mean()
+                    combined_actor_loss = bc_weight * bc_loss_final + (1 - bc_weight) * actor_rl_loss
+                
+                scaler.scale(combined_actor_loss).backward()
+                scaler.unscale_(agent.actor_optimizer)
+                torch.nn.utils.clip_grad_norm_(agent.actor.parameters(), 1.0)
+                scaler.step(agent.actor_optimizer)
+                
+                scaler.update()
+                
+            else:
+                # Standard training without AMP
+                # ========== Behavioral Cloning Loss ==========
+                # Use encoder if available
+                if agent.encoder is not None:
+                    # For LSTM/Transformer encoder
+                    states_seq = states.unsqueeze(1)  # [batch, 1, state_dim]
+                    encoded_states = agent.encoder(states_seq)
+                    if isinstance(encoded_states, tuple):  # LSTM returns (output, hidden)
+                        encoded_states = encoded_states[0]
+                    # Get last timestep
+                    encoded_states = encoded_states[:, -1, :] if encoded_states.dim() == 3 else encoded_states
+                    predicted_actions = agent.actor(encoded_states).float()
+                    
+                    # For target network
+                    next_states_seq = next_states.unsqueeze(1)
+                    encoded_next = agent.encoder_target(next_states_seq)
+                    if isinstance(encoded_next, tuple):
+                        encoded_next = encoded_next[0]
+                    encoded_next = encoded_next[:, -1, :] if encoded_next.dim() == 3 else encoded_next
+                    next_actions = agent.actor_target(encoded_next).float()
+                else:
+                    # No encoder, use raw states
+                    predicted_actions = agent.actor(states).float()
+                    next_actions = agent.actor_target(next_states).float()
+                
+                bc_loss = torch.nn.functional.mse_loss(predicted_actions, actions)
+                
+                # ========== Off-policy RL Loss ==========
+                with torch.no_grad():
+                    # next_actions already computed above (with or without encoder)
+                    if agent.encoder is not None:
+                        q1_next, q2_next = agent.critic_target(encoded_next, next_actions)
+                    else:
+                        q1_next, q2_next = agent.critic_target(next_states, next_actions)
+                    q1_next = q1_next.float()
+                    q2_next = q2_next.float()
+                    target_q = (rewards.unsqueeze(1) + agent.gamma * torch.min(q1_next, q2_next) * (1 - dones.unsqueeze(1))).float()
+                
+                if agent.encoder is not None:
+                    q1, q2 = agent.critic(encoded_states, actions)
+                else:
+                    q1, q2 = agent.critic(states, actions)
+                q1 = q1.float()
+                q2 = q2.float()
+                critic_loss = (
+                    torch.nn.functional.mse_loss(q1, target_q) +
+                    torch.nn.functional.mse_loss(q2, target_q)
+                ) / 2
+                
+                # ========== CQL Penalty (if enabled and in warmup period) ==========
+                if use_cql_this_epoch:
+                    # Sample random actions
+                    batch_size_cur = states.shape[0]
+                    random_actions = torch.rand(batch_size_cur, cql_num_random, actions.shape[1], device=device)
+                    random_actions = random_actions * 2 - 1  # Scale to [-1, 1]
+                    
+                    # Repeat states for random actions
+                    if agent.encoder is not None:
+                        # Use encoded states
+                        encoded_states_repeated = encoded_states.unsqueeze(1).repeat(1, cql_num_random, 1)
+                        encoded_states_flat = encoded_states_repeated.reshape(-1, encoded_states.shape[1])
+                    else:
+                        states_repeated = states.unsqueeze(1).repeat(1, cql_num_random, 1)
+                        encoded_states_flat = states_repeated.reshape(-1, states.shape[1])
+                    
+                    random_actions_flat = random_actions.reshape(-1, actions.shape[1])
+                    
+                    # Q-values for random actions
+                    q1_random, q2_random = agent.critic(encoded_states_flat, random_actions_flat)
+                    q1_random = q1_random.reshape(batch_size_cur, cql_num_random).float()
+                    q2_random = q2_random.reshape(batch_size_cur, cql_num_random).float()
+                    
+                    # CQL penalty: logsumexp of random Q-values minus data Q-values
+                    cql_penalty = (
+                        torch.logsumexp(q1_random / cql_temp, dim=1).mean() +
+                        torch.logsumexp(q2_random / cql_temp, dim=1).mean() -
+                        q1.mean() - q2.mean()
+                    )
+                    
+                    critic_loss = critic_loss + cql_alpha * cql_penalty
             
-            # ========== Off-policy RL Loss ==========
-            with torch.no_grad():
-                next_actions = agent.actor_target(next_states).float()
-                q1_next, q2_next = agent.critic_target(next_states, next_actions)
-                q1_next = q1_next.float()
-                q2_next = q2_next.float()
-                target_q = (rewards.unsqueeze(1) + agent.gamma * torch.min(q1_next, q2_next) * (1 - dones.unsqueeze(1))).float()
+                # ========== Combined Update ==========
+                # Update Critic first
+                agent.critic_optimizer.zero_grad()
+                critic_loss.backward()
+                torch.nn.utils.clip_grad_norm_(agent.critic.parameters(), 1.0)
+                agent.critic_optimizer.step()
+                
+                # Update Actor (BC + policy gradient, computed separately)
+                agent.actor_optimizer.zero_grad()
+                
+                # Recompute actor loss after critic update
+                if agent.encoder is not None:
+                    states_seq = states.unsqueeze(1)
+                    encoded_states = agent.encoder(states_seq)
+                    if isinstance(encoded_states, tuple):
+                        encoded_states = encoded_states[0]
+                    # Handle both 2D and 3D encoder outputs
+                    if encoded_states.dim() == 3:
+                        encoded_states = encoded_states[:, -1, :]
+                    pred_actions_for_bc = agent.actor(encoded_states).float()
+                else:
+                    pred_actions_for_bc = agent.actor(states).float()
+                bc_loss_final = torch.nn.functional.mse_loss(pred_actions_for_bc, actions)
+                
+                if agent.encoder is not None:
+                    states_seq = states.unsqueeze(1)
+                    encoded_states = agent.encoder(states_seq)
+                    if isinstance(encoded_states, tuple):
+                        encoded_states = encoded_states[0]
+                    # Handle both 2D and 3D encoder outputs
+                    if encoded_states.dim() == 3:
+                        encoded_states = encoded_states[:, -1, :]
+                    pred_actions_for_q = agent.actor(encoded_states).float()
+                    q1_pred, _ = agent.critic(encoded_states, pred_actions_for_q)
+                else:
+                    pred_actions_for_q = agent.actor(states).float()
+                    q1_pred, _ = agent.critic(states, pred_actions_for_q)
+                q1_pred = q1_pred.float()
+                actor_rl_loss = -q1_pred.mean()
+                
+                # Combined loss - ensure float32
+                bc_weight_tensor = torch.tensor(bc_weight, dtype=torch.float32, device=device)
+                combined_actor_loss = (bc_weight_tensor * bc_loss_final + (1 - bc_weight_tensor) * actor_rl_loss).float()
+                
+                combined_actor_loss.backward()
+                torch.nn.utils.clip_grad_norm_(agent.actor.parameters(), 1.0)
+                agent.actor_optimizer.step()
             
-            q1, q2 = agent.critic(states, actions)
-            q1 = q1.float()
-            q2 = q2.float()
-            critic_loss = (
-                torch.nn.functional.mse_loss(q1, target_q) +
-                torch.nn.functional.mse_loss(q2, target_q)
-            ) / 2
-            
-            # ========== Combined Update ==========
-            # Update Critic first
-            agent.critic_optimizer.zero_grad()
-            critic_loss.backward()
-            torch.nn.utils.clip_grad_norm_(agent.critic.parameters(), 1.0)
-            agent.critic_optimizer.step()
-            
-            # Update Actor (BC + policy gradient, computed separately)
-            agent.actor_optimizer.zero_grad()
-            
-            # Recompute actor loss after critic update
-            pred_actions_for_bc = agent.actor(states).float()
-            bc_loss_final = torch.nn.functional.mse_loss(pred_actions_for_bc, actions)
-            
-            pred_actions_for_q = agent.actor(states).float()
-            q1_pred, _ = agent.critic(states, pred_actions_for_q)
-            q1_pred = q1_pred.float()
-            actor_rl_loss = -q1_pred.mean()
-            
-            # Combined loss - ensure float32
-            bc_weight_tensor = torch.tensor(bc_weight, dtype=torch.float32, device=device)
-            combined_actor_loss = (bc_weight_tensor * bc_loss_final + (1 - bc_weight_tensor) * actor_rl_loss).float()
-            
-            combined_actor_loss.backward()
-            torch.nn.utils.clip_grad_norm_(agent.actor.parameters(), 1.0)
-            agent.actor_optimizer.step()
-            
-            # Soft update target networks
+            # Soft update target networks (공통)
             soft_update(agent.actor_target, agent.actor, agent.tau)
             soft_update(agent.critic_target, agent.critic, agent.tau)
             
             epoch_train_bc.append(bc_loss.item())
             epoch_train_rl.append(actor_rl_loss.item())
+            epoch_train_total.append(combined_actor_loss.item() + critic_loss.item())
+            epoch_train_rl.append(actor_rl_loss.item() if not scaler else actor_rl_loss.item())
             epoch_train_total.append(combined_actor_loss.item() + critic_loss.item())
         
         # Validation loop
@@ -326,9 +577,28 @@ def stage1_offline_pretraining(
                 states, actions, _, _, _ = batch
                 states = states.float().to(device)
                 actions = actions.float().to(device)
-                predicted_actions = agent.actor(states)
+                
+                if agent.encoder is not None:
+                    states_seq = states.unsqueeze(1)
+                    encoded_states = agent.encoder(states_seq)
+                    if isinstance(encoded_states, tuple):
+                        encoded_states = encoded_states[0]
+                    # Handle both 2D and 3D encoder outputs
+                    if encoded_states.dim() == 3:
+                        encoded_states = encoded_states[:, -1, :]
+                    predicted_actions = agent.actor(encoded_states)
+                else:
+                    predicted_actions = agent.actor(states)
                 val_loss = torch.nn.functional.mse_loss(predicted_actions, actions)
                 epoch_val_loss.append(val_loss.item())
+        
+        # Track epoch time
+        epoch_time = time.time() - epoch_start
+        epoch_times.append(epoch_time)
+        avg_epoch_time = np.mean(epoch_times)
+        remaining_epochs = n_epochs - epoch - 1
+        eta_seconds = avg_epoch_time * remaining_epochs
+        eta_minutes = eta_seconds / 60
         
         # Record metrics
         avg_train_bc = np.mean(epoch_train_bc)
@@ -343,9 +613,11 @@ def stage1_offline_pretraining(
         
         # Periodic logging
         if epoch % eval_interval == 0 or epoch == n_epochs - 1:
-            print(f"\n  Epoch {epoch+1}/{n_epochs}:")
+            cql_status = "ON" if use_cql_this_epoch else "OFF"
+            print(f"\n  Epoch {epoch+1}/{n_epochs} [CQL: {cql_status}]:")
             print(f"    Train - BC: {avg_train_bc:.4f}, RL: {avg_train_rl:.4f}, Total: {avg_train_total:.4f}")
             print(f"    Val Loss: {avg_val_loss:.4f}")
+            print(f"    Time: {epoch_time:.1f}s | Avg: {avg_epoch_time:.1f}s | ETA: {eta_minutes:.1f}min")
         
         # Save best model
         if avg_val_loss < best_val_loss:
@@ -384,25 +656,50 @@ def stage2_online_finetuning(
     dirs: Dict[str, Path],
     eval_interval: int,
     seed: int,
+    env_class=None,
     device: torch.device = None
 ) -> QuantumDDPGAgent:
     """
     Stage 2: Online fine-tuning on simulator (NEW synthetic data).
     
     The agent explores beyond expert data and optimizes for reward.
+    
+    Args:
+        agent: Agent to fine-tune
+        n_episodes: Number of online episodes
+        warmup_episodes: Episodes without exploration noise
+        dirs: Dictionary with 'stage2' key for saving
+        eval_interval: Evaluation interval
+        seed: Random seed
+        env_class: Environment class to use (PropofolEnv or DualDrugEnv)
+        device: Torch device
     """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Import environment classes
+    from environment.propofol_env import PropofolEnv
+    from environment.dual_drug_env import DualDrugEnv
+    
+    # Determine environment based on agent's action dimension
+    if env_class is None:
+        if agent.action_dim == 1:
+            env_class = PropofolEnv
+        elif agent.action_dim == 2:
+            env_class = DualDrugEnv
+        else:
+            raise ValueError(f"Unsupported action_dim: {agent.action_dim}")
     
     print("\n" + "="*70)
     print("STAGE 2: ONLINE FINE-TUNING (Simulator - NEW Data!)")
     print("="*70)
     print(f"Device: {device}")
+    print(f"Environment: {env_class.__name__}")
     print(f"Fine-tuning for {n_episodes} episodes on simulator")
     print(f"Warmup (no exploration): {warmup_episodes} episodes")
     
     # Create environment
-    env = PropofolEnv(seed=seed)
+    env = env_class(seed=seed)
     
     # Create evaluation patients
     eval_patients = create_patient_population(5, seed=seed + 1000)
@@ -447,10 +744,16 @@ def stage2_online_finetuning(
             agent.decay_noise()
         
         # Record metrics
-        metrics = env.get_episode_metrics()
+        if hasattr(env, 'get_episode_metrics'):
+            metrics = env.get_episode_metrics()
+            episode_mdape.append(metrics.get('mdape', 0))
+            episode_time_in_target.append(metrics.get('time_in_target', 0))
+        else:
+            # For environments without get_episode_metrics, use placeholder values
+            episode_mdape.append(0)
+            episode_time_in_target.append(0)
+        
         episode_rewards.append(episode_reward)
-        episode_mdape.append(metrics.get('mdape', 0))
-        episode_time_in_target.append(metrics.get('time_in_target', 0))
         
         # Periodic evaluation
         if (episode + 1) % eval_interval == 0 or episode == n_episodes - 1:
@@ -474,15 +777,18 @@ def stage2_online_finetuning(
                     episode_reward += reward
                     state = next_state
                 
-                metrics = env.get_episode_metrics()
+                if hasattr(env, 'get_episode_metrics'):
+                    metrics = env.get_episode_metrics()
+                    eval_mdapes.append(metrics['mdape'])
                 eval_rewards.append(episode_reward)
-                eval_mdapes.append(metrics['mdape'])
             
             print(f"\n  Episode {episode+1}/{n_episodes}:")
             print(f"    Avg Reward (last {eval_interval}): {avg_reward:.2f}")
-            print(f"    Avg MDAPE (last {eval_interval}): {avg_mdape:.2f}%")
-            print(f"    Avg Time in Target: {avg_tit:.1f}%")
-            print(f"    Eval (5 patients): MDAPE={np.mean(eval_mdapes):.2f}%")
+            if hasattr(env, 'get_episode_metrics'):
+                print(f"    Avg MDAPE (last {eval_interval}): {avg_mdape:.2f}%")
+                print(f"    Avg Time in Target: {avg_tit:.1f}%")
+                if eval_mdapes:
+                    print(f"    Eval (5 patients): MDAPE={np.mean(eval_mdapes):.2f}%")
             
             # Save best models
             if avg_reward > best_reward:
@@ -490,7 +796,7 @@ def stage2_online_finetuning(
                 agent.save(str(dirs['stage2'] / 'best_reward.pt'))
                 print(f"    → New best reward: {best_reward:.2f}")
             
-            if avg_mdape < best_mdape:
+            if hasattr(env, 'get_episode_metrics') and avg_mdape < best_mdape:
                 best_mdape = avg_mdape
                 agent.save(str(dirs['stage2'] / 'best_mdape.pt'))
                 print(f"    → New best MDAPE: {best_mdape:.2f}%")
@@ -510,6 +816,8 @@ def stage2_online_finetuning(
     
     print(f"\n✓ Stage 2 Complete: Online Fine-tuning")
     print(f"  Best reward: {best_reward:.2f}")
+    if hasattr(env, 'get_episode_metrics'):
+        print(f"  Best MDAPE: {best_mdape:.2f}%")
     print(f"  Best MDAPE: {best_mdape:.2f}%")
     print(f"  Saved models:")
     print(f"    - Best reward: {dirs['stage2'] / 'best_reward.pt'}")

@@ -365,13 +365,31 @@ class ClassicalDDPGAgent:
         device = next(self.actor.parameters()).device
         
         with torch.no_grad():
-            # Encode state if using encoder
-            if self.encoder is not None and state_sequence is not None:
-                state_seq = torch.FloatTensor(state_sequence).to(device)
-                if state_seq.dim() == 2:
-                    state_seq = state_seq.unsqueeze(0)
-                encoded_state = self.encoder(state_seq)
+            # Encode state if using temporal encoder
+            if self.encoder is not None:
+                # If sequence provided, use it; otherwise create a 1-step sequence
+                if state_sequence is not None:
+                    state_seq_tensor = torch.FloatTensor(state_sequence).to(device)
+                else:
+                    # Create a single-step sequence for LSTM/Transformer
+                    state_seq_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)  # [1, state_dim]
+                
+                # Ensure batch dimension exists
+                if state_seq_tensor.dim() == 2:
+                    state_seq_tensor = state_seq_tensor.unsqueeze(0)  # [1, seq_len, state_dim]
+                
+                encoder_output = self.encoder(state_seq_tensor)
+                # Handle encoder output (LSTM returns tuple, Transformer returns tensor)
+                if isinstance(encoder_output, tuple):
+                    encoded_state = encoder_output[0]  # Take encoded features, ignore hidden state
+                else:
+                    encoded_state = encoder_output
+                
+                # Handle both 2D and 3D encoder outputs
+                if encoded_state.dim() == 3:
+                    encoded_state = encoded_state[:, -1, :]  # Get last timestep [batch, encoded_dim]
             else:
+                # Use state directly (no encoder)
                 encoded_state = torch.FloatTensor(state).to(device)
                 if encoded_state.dim() == 1:
                     encoded_state = encoded_state.unsqueeze(0)

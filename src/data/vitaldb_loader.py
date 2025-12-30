@@ -184,14 +184,45 @@ class VitalDBLoader:
             
             df = pd.DataFrame(df_dict)
             
-            # Get patient weight for unit conversion
+            # Get patient demographics for unit conversion and state representation
             try:
-                clinical_data = vitaldb.load_case(caseid, ['Clinical/weight'], interval)
-                patient_weight = clinical_data[0, 0] if clinical_data is not None and len(clinical_data) > 0 else 70.0
-                if np.isnan(patient_weight) or patient_weight <= 0:
+                clinical_tracks = ['Clinical/weight', 'Clinical/height', 'Clinical/age', 'Clinical/sex']
+                clinical_data = vitaldb.load_case(caseid, clinical_tracks, interval)
+                
+                if clinical_data is not None and len(clinical_data) > 0:
+                    patient_weight = clinical_data[0, 0]
+                    patient_height = clinical_data[0, 1] if clinical_data.shape[1] > 1 else 170.0
+                    patient_age = clinical_data[0, 2] if clinical_data.shape[1] > 2 else 50.0
+                    patient_sex = clinical_data[0, 3] if clinical_data.shape[1] > 3 else 'M'
+                    
+                    # Validate and set defaults
+                    if np.isnan(patient_weight) or patient_weight <= 0:
+                        patient_weight = 70.0
+                    if np.isnan(patient_height) or patient_height <= 0:
+                        patient_height = 170.0
+                    if np.isnan(patient_age) or patient_age <= 0:
+                        patient_age = 50.0
+                    if pd.isna(patient_sex) or patient_sex not in ['M', 'F']:
+                        patient_sex = 'M'
+                else:
+                    # Default values
                     patient_weight = 70.0
+                    patient_height = 170.0
+                    patient_age = 50.0
+                    patient_sex = 'M'
             except:
+                # Default values if loading fails
                 patient_weight = 70.0
+                patient_height = 170.0
+                patient_age = 50.0
+                patient_sex = 'M'
+            
+            # Compute BMI
+            height_m = patient_height / 100.0
+            patient_bmi = patient_weight / (height_m ** 2)
+            
+            # Convert sex to numeric (0=Female, 1=Male)
+            sex_numeric = 1.0 if patient_sex == 'M' else 0.0
             
             # Unit conversions
             # 1. PPF20_RATE: mL/hr (20 mg/mL) → mg/kg/h
@@ -204,7 +235,13 @@ class VitalDBLoader:
             
             df['time'] = np.arange(len(df)) * interval
             df['caseid'] = caseid
+            
+            # Add demographics to DataFrame
             df['weight'] = patient_weight
+            df['height'] = patient_height
+            df['age'] = patient_age
+            df['sex'] = sex_numeric
+            df['bmi'] = patient_bmi
             
             # Cache results
             with open(cache_file, 'wb') as f:
@@ -466,6 +503,7 @@ class VitalDBLoader:
         n_cases: int = 100,
         bis_range: Optional[Tuple[float, float]] = None,
         min_duration: int = 1800,
+        sampling_interval: int = 1,
         save_path: Optional[str] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -478,13 +516,14 @@ class VitalDBLoader:
             n_cases: Number of cases to load
             bis_range: BIS range filter (default: self.bis_range)
             min_duration: Minimum case duration in seconds
+            sampling_interval: Sample every Nth second (1=all data, 5=every 5 seconds for 80% reduction)
             save_path: Path to save prepared data
             
         Returns:
             Tuple of (states, actions, next_states, rewards, dones) where:
-            - states: (N, 10) - Extended state for dual drug
+            - states: (N, 13) - Extended state for dual drug with demographics
             - actions: (N, 2) - [propofol_rate, remifentanil_rate]
-            - next_states: (N, 10)
+            - next_states: (N, 13)
             - rewards: (N,) - Computed from VitalDB BIS tracking
             - dones: (N,) - Episode termination flags
         """
@@ -495,6 +534,7 @@ class VitalDBLoader:
         print(f"  Target cases: {n_cases}")
         print(f"  BIS range: {bis_range}")
         print(f"  Min duration: {min_duration}s")
+        print(f"  Sampling interval: {sampling_interval}s ({'all data' if sampling_interval == 1 else f'{100 * (1 - 1/sampling_interval):.0f}% data reduction'})")
         
         print(f"  Mode: REAL VitalDB remifentanil data (Orchestra/RFTN20 or RFTN50)")
         
@@ -510,6 +550,15 @@ class VitalDBLoader:
         valid_cases = 0
         processed_cases = 0
         
+        # Debug counters
+        debug_stats = {
+            'no_data': 0,
+            'no_remifentanil': 0,
+            'no_demographics': 0,
+            'insufficient_samples': 0,
+            'no_transitions': 0
+        }
+        
         for caseid in tqdm(case_ids, desc="Scanning for dual drug cases"):
             if valid_cases >= n_cases:
                 break
@@ -519,10 +568,17 @@ class VitalDBLoader:
             df = self.load_case(caseid)
             
             if df is None or len(df) < 10:
+                debug_stats['no_data'] += 1
+                continue
+            
+            # Check if demographics exist (required for 13D state)
+            if 'age' not in df.columns or 'sex' not in df.columns or 'bmi' not in df.columns:
+                debug_stats['no_demographics'] += 1
                 continue
             
             # Check if remifentanil data exists
             if 'RFTN_RATE' not in df.columns:
+                debug_stats['no_remifentanil'] += 1
                 continue
             
             # Filter for cases with both drugs present
@@ -536,12 +592,17 @@ class VitalDBLoader:
             ].copy()
             
             if len(df_filtered) < 10:
+                debug_stats['insufficient_samples'] += 1
                 continue
             
             # Extract transitions
             transitions_added = 0
             
             for i in range(len(df_filtered) - 1):
+                # Apply subsampling: only process every Nth row
+                if i % sampling_interval != 0:
+                    continue
+                
                 try:
                     # State at time t (10D for dual drug)
                     state = self._extract_dual_drug_state(df_filtered, i)
@@ -591,6 +652,19 @@ class VitalDBLoader:
                 valid_cases += 1
                 if valid_cases % 10 == 0:
                     print(f"  Found {valid_cases} valid dual drug cases (scanned {processed_cases})...")
+            else:
+                debug_stats['no_transitions'] += 1
+        
+        # Print debug statistics
+        print(f"\n📊 Debug Statistics:")
+        print(f"  Scanned: {processed_cases} cases")
+        print(f"  Valid: {valid_cases} cases")
+        print(f"  Filtered out:")
+        print(f"    - No data/too short: {debug_stats['no_data']}")
+        print(f"    - No demographics (age/sex/BMI): {debug_stats['no_demographics']}")
+        print(f"    - No remifentanil data: {debug_stats['no_remifentanil']}")
+        print(f"    - Insufficient samples: {debug_stats['insufficient_samples']}")
+        print(f"    - No valid transitions: {debug_stats['no_transitions']}")
         
         # Convert to numpy arrays
         states = np.array(states_list, dtype=np.float32)
@@ -687,23 +761,26 @@ class VitalDBLoader:
     
     def _extract_dual_drug_state(self, df: pd.DataFrame, idx: int) -> np.ndarray:
         """
-        Extract state vector for dual drug control.
+        Extract state vector for dual drug control with patient demographics.
         
         State s_t = [
             BIS_error,              # [0] e_t = target - BIS_t (target 50)
             Ce_PPF,                 # [1] Propofol effect-site concentration
-            Ce_RFTN,                # [2] Remifentanil effect-site (estimated)
+            Ce_RFTN,                # [2] Remifentanil effect-site concentration
             dBIS/dt,                # [3] BIS derivative
             u_{ppf,t-1},            # [4] Previous propofol action
             u_{rftn,t-1},           # [5] Previous remifentanil action
             PPF_accumulation,       # [6] Cumulative propofol (1 min)
             RFTN_accumulation,      # [7] Cumulative remifentanil (1 min)
             BIS_slope,              # [8] BIS slope (3 min)
-            interaction_factor      # [9] Drug interaction indicator
+            interaction_factor,     # [9] Drug interaction indicator
+            age_normalized,         # [10] Age / 100 (0-1 range)
+            sex,                    # [11] 0=Female, 1=Male
+            bmi_normalized,         # [12] BMI / 40 (0-1 range)
         ]
         
         Returns:
-            10D state vector
+            13D state vector (previously 10D)
         """
         row = df.iloc[idx]
         
@@ -757,6 +834,11 @@ class VitalDBLoader:
         # Simple multiplicative interaction model
         interaction = ce_ppf * ce_rftn
         
+        # [10-12] Patient demographics (normalized)
+        age_norm = df.iloc[idx]['age'] / 100.0      # 0-100 years → 0-1
+        sex = df.iloc[idx]['sex']                    # 0 or 1
+        bmi_norm = df.iloc[idx]['bmi'] / 40.0       # 15-40 BMI → 0.375-1.0
+        
         state = np.array([
             bis_error,       # [0]
             ce_ppf,          # [1]
@@ -767,7 +849,10 @@ class VitalDBLoader:
             ppf_acc,         # [6]
             rftn_acc,        # [7]
             bis_slope,       # [8]
-            interaction      # [9]
+            interaction,     # [9]
+            age_norm,        # [10] NEW: Age normalized
+            sex,             # [11] NEW: Sex (0=F, 1=M)
+            bmi_norm         # [12] NEW: BMI normalized
         ], dtype=np.float32)
         
         return state

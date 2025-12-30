@@ -92,7 +92,7 @@ pkpd_model:
 # Quantum Circuit Configuration
 # =============================================================================
 quantum:
-  n_qubits: 2                 # Number of qubits
+  n_qubits: 3                 # Number of qubits (increased for 13D state)
   n_layers: 4                 # Number of variational layers
   
   # Encoding Strategy
@@ -102,38 +102,12 @@ quantum:
   device: "default.qubit"     # PennyLane device
   shots: null                 # null for analytic simulation
   
-  # Feature Selection for 2-qubit encoding
+  # Feature Selection for 3-qubit encoding
   # Indices of state features to encode (from encoded representation)
-  feature_indices: [0, 1]
+  feature_indices: [0, 1, 2]
   
   # Action mapping
   action_scale: 200.0         # Max propofol dose for action scaling
-  
-  # Hardware Configuration (for HardwareOptimizedQuantumAgent)
-  hardware:
-    # Hardware provider: "simulator", "ibm", "aws", "ionq"
-    provider: "simulator"
-    
-    # Specific backend name (optional, None for auto-selection)
-    backend_name: null        # e.g., "ibmq_manila", "arn:aws:braket:..."
-    
-    # Error mitigation for NISQ devices
-    use_error_mitigation: true
-    
-    # Maximum circuit depth constraint for hardware
-    max_circuit_depth: 50     # Conservative for NISQ (2024-2025)
-    
-    # Shots for quantum measurements (more shots = less noise)
-    hardware_shots: 1000      # Overrides 'shots' when using real hardware
-    
-    # Batch quantum execution for efficiency
-    batch_execution: false    # Experimental feature
-    
-    # Credentials path (optional)
-    credentials_path: null    # Path to quantum provider credentials
-    
-    # Cost tracking
-    enable_cost_tracking: true
 
 # =============================================================================
 # Temporal Encoder Configuration (Fig.4)
@@ -178,7 +152,7 @@ networks:
   encoder:
     hidden_dims: [64, 32]
     activation: "relu"
-    output_dim: 2             # Must match n_qubits for angle encoding
+    output_dim: 3             # Must match n_qubits for angle encoding
     
   # BIS Predictor Network per (48)
   bis_predictor:
@@ -323,3 +297,90 @@ logging:
 # Random Seeds
 # =============================================================================
 seed: 42
+# =============================================================================
+# VitalDB Data Configuration
+# =============================================================================
+vitaldb:
+  # Data Loading
+  cache_dir: "data/vitaldb_cache"
+  max_cases: 100              # Maximum number of cases to download (null for all)
+  include_remifentanil: true  # Include remifentanil data
+  
+  # Quality Filters
+  min_duration_min: 30        # Minimum anesthesia duration (minutes)
+  max_duration_min: 240       # Maximum anesthesia duration (minutes)
+  bis_sqi_threshold: 50       # Minimum BIS signal quality index (0-100)
+  max_missing_ratio: 0.2      # Maximum allowed missing data ratio (0-1)
+  sampling_interval: 5.0      # Resampling interval (seconds)
+  
+  # Required VitalDB Tracks
+  required_tracks:
+    - "BIS/BIS"                  # Bispectral Index
+    - "BIS/SQI"                  # Signal Quality Index
+    - "Orchestra/PPF20_CE"       # Propofol effect-site concentration
+    - "Orchestra/PPF20_RATE"     # Propofol infusion rate
+    - "Orchestra/PPF20_VOL"      # Propofol total volume
+  
+  # Optional Tracks
+  optional_tracks:
+    - "Orchestra/RFTN20_CE"      # Remifentanil effect-site concentration
+    - "Orchestra/RFTN20_RATE"    # Remifentanil infusion rate
+    - "Solar8000/HR"             # Heart Rate
+    - "Solar8000/ART_MBP"        # Mean Arterial Pressure
+    - "Solar8000/PLETH_SPO2"     # SpO2
+
+# =============================================================================
+# Offline RL Configuration
+# =============================================================================
+offline:
+  # Dataset Configuration
+  dataset_file: "data/offline_dataset/vitaldb_offline.h5"
+  
+  # Episode Splitting
+  split_episodes: true
+  episode_max_length: 720     # Maximum episode length (1 hour at 5s intervals)
+  episode_min_length: 60      # Minimum episode length (5 minutes)
+  
+  # Data Splits
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+  
+  # Behavioral Cloning (Warm-start)
+  behavioral_cloning:
+    enabled: true             # Pre-train with BC before offline RL
+    epochs: 50                # Number of BC pre-training epochs
+    batch_size: 256
+    learning_rate: 0.0001
+    validation_interval: 5
+    early_stopping_patience: 10
+    l2_regularization: 0.0001
+  
+  # Conservative Q-Learning (CQL) Configuration
+  cql:
+    enabled: true             # Enable CQL for safe offline RL
+    alpha: 1.0                # CQL regularization coefficient
+    min_q_weight: 5.0         # Weight for Q-value underestimation
+    num_random_actions: 10    # Number of random actions for CQL penalty
+    temp: 1.0                 # Temperature for CQL Boltzmann sampling
+    with_lagrange: false      # Use Lagrangian constraint for CQL alpha
+    target_action_gap: 0.0    # Target gap for Lagrangian
+    
+  # Training Configuration
+  training:
+    max_epochs: 500           # Maximum training epochs
+    batch_size: 256
+    validation_interval: 10
+    early_stopping_patience: 50
+    gradient_steps_per_epoch: 1000
+    
+  # Evaluation
+  evaluation:
+    eval_on_vitaldb: true     # Evaluate on VitalDB test set
+    eval_on_synthetic: true   # Evaluate on synthetic patients
+    n_synthetic_patients: 20  # Number of synthetic test patients
+    n_vitaldb_episodes: 50    # Number of VitalDB test episodes
+    
+    # Comparison Baselines
+    compare_to_anesthesiologist: true  # Compare to actual performance
+    compare_to_schnider_tci: true      # Compare to Schnider TCI

@@ -512,14 +512,14 @@ class PatientSimulator:
         weight = self.patient.weight
         
         if drug.lower() == "propofol":
-            v1_ml = self.ppf_model.params.v1 * 1000  # Convert L to ml
+            v1_ml = self.ppf_model.params.V1 * 1000  # Convert L to ml
             # Convert mg/kg to μg and calculate concentration increase
             dose_ug = dose_mg_per_kg * weight * 1000  # mg to μg
             concentration_increase = dose_ug / v1_ml
             self.state_ppf[0] += concentration_increase
             self.state[0] += concentration_increase  # Backward compat
         else:  # remifentanil
-            v1_ml = self.rftn_model.params.v1 * 1000  # Convert L to ml
+            v1_ml = self.rftn_model.params.V1 * 1000  # Convert L to ml
             # dose_mg_per_kg is actually μg/kg for remifentanil
             dose_ng = dose_mg_per_kg * weight * 1000  # μg to ng
             concentration_increase = dose_ng / v1_ml

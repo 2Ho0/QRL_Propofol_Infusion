@@ -219,6 +219,7 @@ class QuantumPolicy(nn.Module):
         n_layers: int = 4,
         encoder_hidden: List[int] = [64, 32],
         action_scale: float = 1.0,
+        action_dim: int = 1,
         device_name: str = "default.qubit",
         seed: Optional[int] = None
     ):
@@ -231,6 +232,7 @@ class QuantumPolicy(nn.Module):
             n_layers: Number of VQC layers
             encoder_hidden: Hidden layer sizes for encoder
             action_scale: Scale for output action
+            action_dim: Dimension of action output
             device_name: PennyLane device name
             seed: Random seed
         """
@@ -240,6 +242,7 @@ class QuantumPolicy(nn.Module):
         self.n_qubits = n_qubits
         self.n_layers = n_layers
         self.action_scale = action_scale
+        self.action_dim = action_dim
         
         # Classical encoder: state_dim -> n_qubits features
         encoder_layers = []
@@ -271,7 +274,7 @@ class QuantumPolicy(nn.Module):
         self.output_scale = nn.Sequential(
             nn.Linear(1, 16),
             nn.ReLU(),
-            nn.Linear(16, 1),
+            nn.Linear(16, self.action_dim),
             nn.Sigmoid()  # Output in [0, 1]
         )
     
@@ -310,8 +313,11 @@ class QuantumPolicy(nn.Module):
         # First normalize to [0, 1]
         normalized = (vqc_output + 1) / 2  # [batch_size]
         
-        # Apply output scaling
-        action = normalized.unsqueeze(-1) * self.action_scale  # [batch_size, 1]
+        # Convert to float32 to match network dtype
+        normalized = normalized.float()
+        
+        # Apply output scaling network
+        action = self.output_scale(normalized.unsqueeze(-1)) * self.action_scale  # [batch_size, action_dim]
         
         if squeeze_output:
             action = action.squeeze(0)

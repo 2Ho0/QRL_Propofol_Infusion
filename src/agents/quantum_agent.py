@@ -869,9 +869,28 @@ class QuantumDDPGAgent:
         
         # Encode states if using temporal encoder
         if self.encoder is not None:
-            encoded_states = self.encoder(states)
+            encoder_output = self.encoder(states)
+            # Handle encoder output (LSTM returns tuple, Transformer returns tensor)
+            if isinstance(encoder_output, tuple):
+                encoded_states = encoder_output[0]  # Take encoded features, ignore hidden state
+            else:
+                encoded_states = encoder_output
+            
+            # Handle 3D encoder outputs (batch, seq_len, hidden_dim)
+            if encoded_states.dim() == 3:
+                encoded_states = encoded_states[:, -1, :]  # Get last timestep [batch, hidden_dim]
+            
             with torch.no_grad():
-                encoded_next_states = self.encoder_target(next_states)
+                encoder_target_output = self.encoder_target(next_states)
+                # Handle encoder output (LSTM returns tuple, Transformer returns tensor)
+                if isinstance(encoder_target_output, tuple):
+                    encoded_next_states = encoder_target_output[0]
+                else:
+                    encoded_next_states = encoder_target_output
+                
+                # Handle 3D encoder outputs
+                if encoded_next_states.dim() == 3:
+                    encoded_next_states = encoded_next_states[:, -1, :]
         else:
             encoded_states = states
             encoded_next_states = next_states
@@ -884,7 +903,19 @@ class QuantumDDPGAgent:
         # Update actor (with policy delay for TD3-style)
         actor_loss = None
         if self.update_count % self.policy_delay == 0:
-            actor_loss = self._update_actor(encoded_states)
+            # Re-encode states for actor update to get fresh computational graph
+            if self.encoder is not None:
+                encoder_output = self.encoder(states)
+                if isinstance(encoder_output, tuple):
+                    encoded_states_for_actor = encoder_output[0]
+                else:
+                    encoded_states_for_actor = encoder_output
+                if encoded_states_for_actor.dim() == 3:
+                    encoded_states_for_actor = encoded_states_for_actor[:, -1, :]
+            else:
+                encoded_states_for_actor = states
+            
+            actor_loss = self._update_actor(encoded_states_for_actor)
             
             # Soft update target networks: θ' ← τθ + (1-τ)θ'
             soft_update(self.actor_target, self.actor, self.tau)

@@ -174,7 +174,8 @@ class DualDrugEnv(gym.Env):
         dt: float = 1.0,
         patient_params: Optional[DualDrugPatientParams] = None,
         patient: Optional[PatientParameters] = None,
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
+        reward_type: str = 'potential'
     ):
         """
         Initialize dual drug environment.
@@ -187,6 +188,7 @@ class DualDrugEnv(gym.Env):
             patient_params: Legacy patient-specific parameters (deprecated)
             patient: PatientParameters object (preferred)
             seed: Random seed
+            reward_type: Reward function type ('simple', 'paper', 'hybrid', 'potential')
         
         Note:
             This environment now uses PatientSimulator as the internal physics engine
@@ -198,14 +200,19 @@ class DualDrugEnv(gym.Env):
         self.bis_noise_std = bis_noise_std
         self.max_steps = max_steps
         self.dt = dt  # Time step in minutes
+        self.reward_type = reward_type
+        self.gamma = 0.99  # Discount factor for potential-based shaping
         
         if seed is not None:
             np.random.seed(seed)
         
         # Action space: [propofol_rate, remifentanil_rate]
+        # Updated ranges based on clinical practice:
+        # - Propofol: 0-15 mg/kg/h (typical: 4-12)
+        # - Remifentanil: 0-0.5 μg/kg/min (typical: 0.05-0.3)
         self.action_space = spaces.Box(
             low=np.array([0.0, 0.0]),
-            high=np.array([30.0, 50.0]),  # [mg/kg/h, μg/kg/min]
+            high=np.array([15.0, 0.5]),  # [mg/kg/h, μg/kg/min]
             dtype=np.float32
         )
         
@@ -332,8 +339,11 @@ class DualDrugEnv(gym.Env):
         self.ppf_accumulation.append(ppf_rate)
         self.rftn_accumulation.append(rftn_rate)
         
+        # Store previous BIS for potential-based shaping
+        prev_bis = self.bis_history[-2] if len(self.bis_history) >= 2 else self.bis
+        
         # Compute reward
-        reward = self._compute_reward(ppf_rate, rftn_rate)
+        reward = self._compute_reward(ppf_rate, rftn_rate, prev_bis)
         
         # Update step counter
         self.current_step += 1
@@ -353,35 +363,234 @@ class DualDrugEnv(gym.Env):
     # Note: _update_pk_pd and _compute_bis are now handled by PatientSimulator
     # This eliminates code duplication and uses accurate ODE integration
     
-    def _compute_reward(self, ppf_rate: float, rftn_rate: float) -> float:
+    def _potential_function(self, bis: float) -> float:
         """
-        Compute reward for current state and action.
+        Potential function Φ(s) for reward shaping.
         
-        Reward components:
-        1. BIS tracking: Penalize deviation from target
-        2. Drug efficiency: Penalize excessive drug use
-        3. Safety: Penalize dangerous states (BIS too low/high)
-        4. Smoothness: Penalize rapid action changes
+        This function represents the "value" or "promise" of being in a state
+        with a given BIS value. Higher potential means closer to the goal.
+        
+        The potential function is designed to:
+        - Be highest when BIS is at target (50)
+        - Decrease smoothly as BIS deviates from target
+        - Be continuous and differentiable for stable gradients
+        
+        Args:
+            bis: Current BIS value
+            
+        Returns:
+            Potential value (higher is better)
         """
-        # BIS tracking reward (formulation 40)
+        e_bis = abs(bis - self.target_bis)
+        
+        # Zone-based potential (mirrors reward structure)
+        if e_bis <= 5:
+            # Perfect zone: highest potential
+            return 10.0
+        elif e_bis <= 10:
+            # Acceptable zone: linear decay from 10.0 to 5.0
+            return 10.0 - (e_bis - 5) * 1.0
+        elif e_bis <= 20:
+            # Outside target: linear decay from 5.0 to 2.5
+            return 5.0 - (e_bis - 10) * 0.25
+        else:
+            # Far from target: slow decay, minimum 0
+            return max(0.0, 2.5 - (e_bis - 20) * 0.05)
+    
+    def _compute_reward(self, ppf_rate: float, rftn_rate: float, prev_bis: float) -> float:
+        """
+        Compute reward using potential-based reward shaping.
+        
+        Formula: r_total = r_base + F(s, s')
+        where F(s, s') = γΦ(s') - Φ(s)
+        
+        This method guarantees:
+        1. Optimal policy is preserved (Ng et al. 1999)
+        2. Faster learning through shaped rewards
+        3. Smooth gradients throughout state space
+        
+        Args:
+            ppf_rate: Propofol infusion rate (mg/kg/h)
+            rftn_rate: Remifentanil infusion rate (μg/kg/min)
+            prev_bis: Previous BIS value (for potential shaping)
+            
+        Returns:
+            Total reward (base + potential shaping)
+        """
+        if self.reward_type == 'potential':
+            return self._reward_potential_based(ppf_rate, rftn_rate, prev_bis)
+        elif self.reward_type == 'paper':
+            return self._reward_paper(ppf_rate, rftn_rate)
+        elif self.reward_type == 'hybrid':
+            return self._reward_hybrid(ppf_rate, rftn_rate)
+        else:  # 'simple' or default
+            return self._reward_simple(ppf_rate, rftn_rate)
+    
+    def _reward_potential_based(self, ppf_rate: float, rftn_rate: float, prev_bis: float) -> float:
+        """
+        Potential-based reward shaping (Ng et al. 1999).
+        
+        Combines:
+        1. Base reward (paper formulation)
+        2. Potential-based shaping: F(s,s') = γΦ(s') - Φ(s)
+        
+        This preserves optimal policy while accelerating learning.
+        """
+        # === Base Reward (Paper Formulation) ===
+        e_bis = abs(self.bis - self.target_bis)
+        
+        # Weights (from paper)
+        w1, w2, w3 = 1.0, 0.5, 0.1
+        
+        # R_track: BIS tracking reward
+        if e_bis <= 5:
+            r_track = 1.0
+        elif e_bis <= 10:
+            r_track = 0.5 * (1 - (e_bis - 5) / 5)
+        else:
+            r_track = -0.5 * min((e_bis - 10) / 40, 1.0)
+        
+        # R_safe: Safety reward
+        if self.bis < 30:
+            r_safe = -2.0 * ((30 - self.bis) / 30)
+        elif self.bis < 40:
+            r_safe = -0.5 * ((40 - self.bis) / 10)
+        elif self.bis <= 60:
+            r_safe = 0.0
+        elif self.bis <= 70:
+            r_safe = -0.2 * ((self.bis - 60) / 10)
+        else:
+            r_safe = -1.0 * min((self.bis - 70) / 30, 1.0)
+        
+        # R_eff: Drug efficiency
+        normalized_ppf = ppf_rate / 12.0  # Normalize by typical max
+        normalized_remi = rftn_rate / 0.3
+        r_eff = -(normalized_ppf + normalized_remi)
+        
+        # Base reward
+        r_base = w1 * r_track + w2 * r_safe + w3 * r_eff
+        
+        # === Potential-based Shaping ===
+        # F(s, s') = γΦ(s') - Φ(s)
+        phi_prev = self._potential_function(prev_bis)
+        phi_current = self._potential_function(self.bis)
+        shaping = self.gamma * phi_current - phi_prev
+        
+        # Total reward
+        r_total = r_base + shaping
+        
+        return r_total
+    
+    def _reward_paper(self, ppf_rate: float, rftn_rate: float) -> float:
+        """
+        Paper formulation (Equation 1-3) without potential shaping.
+        
+        r_t = w1 * R_track + w2 * R_safe + w3 * R_eff
+        """
+        e_bis = abs(self.bis - self.target_bis)
+        
+        # Weights
+        w1, w2, w3 = 1.0, 0.5, 0.1
+        
+        # R_track
+        if e_bis <= 5:
+            r_track = 1.0
+        elif e_bis <= 10:
+            r_track = 0.5 * (1 - (e_bis - 5) / 5)
+        else:
+            r_track = -0.5 * min((e_bis - 10) / 40, 1.0)
+        
+        # R_safe
+        if self.bis < 30:
+            r_safe = -2.0 * ((30 - self.bis) / 30)
+        elif self.bis < 40:
+            r_safe = -0.5 * ((40 - self.bis) / 10)
+        elif self.bis <= 60:
+            r_safe = 0.0
+        elif self.bis <= 70:
+            r_safe = -0.2 * ((self.bis - 60) / 10)
+        else:
+            r_safe = -1.0 * min((self.bis - 70) / 30, 1.0)
+        
+        # R_eff
+        normalized_ppf = ppf_rate / 12.0
+        normalized_remi = rftn_rate / 0.3
+        r_eff = -(normalized_ppf + normalized_remi)
+        
+        return w1 * r_track + w2 * r_safe + w3 * r_eff
+    
+    def _reward_hybrid(self, ppf_rate: float, rftn_rate: float) -> float:
+        """
+        Hybrid: Dense (paper) + Sparse (bonus/penalty).
+        
+        Combines continuous paper formulation with discrete bonuses/penalties.
+        """
+        # Dense component (paper)
+        r_dense = self._reward_paper(ppf_rate, rftn_rate)
+        
+        # Sparse component
+        r_sparse = 0.0
+        
+        # Perfect zone bonus
+        if 45 <= self.bis <= 55:
+            r_sparse += 10.0
+        elif 40 <= self.bis <= 60:
+            r_sparse += 3.0
+        
+        # Danger penalties
+        if self.bis < 20:
+            r_sparse -= 20.0
+        elif self.bis < 30:
+            r_sparse -= 5.0
+        elif self.bis > 80:
+            r_sparse -= 20.0
+        elif self.bis > 70:
+            r_sparse -= 5.0
+        
+        # Combine (0.7 dense + 0.3 sparse)
+        return 0.7 * r_dense + 0.3 * r_sparse
+    
+    def _reward_simple(self, ppf_rate: float, rftn_rate: float) -> float:
+        """
+        Simple reward (original implementation).
+        
+        Enhanced reward components:
+        1. BIS tracking: Strong penalty for deviation from target (amplified)
+        2. Target range bonus: Large bonus for staying in optimal range
+        3. Drug efficiency: Penalize excessive drug use
+        4. Safety: Heavy penalties for dangerous states
+        5. Smoothness: Penalize rapid action changes
+        """
         bis_error = abs(self.target_bis - self.bis)
-        bis_reward = 1.0 / (bis_error + 1.0)
         
-        # Drug efficiency penalty
-        # Penalize high drug consumption
-        drug_penalty = -0.001 * (ppf_rate + 0.1 * rftn_rate)  # Weight rftn less (more potent)
+        # 1. BIS tracking reward (amplified by 10x for stronger signal)
+        bis_reward = -bis_error * 10.0  # Higher penalty for deviation
         
-        # Safety penalties
+        # 2. Target range bonuses (encourage staying in optimal BIS range)
+        if 45 <= self.bis <= 55:  # Optimal range
+            bis_reward += 50.0  # Large bonus
+        elif 40 <= self.bis <= 60:  # Acceptable range
+            bis_reward += 20.0  # Moderate bonus
+        
+        # 3. Drug efficiency penalty (adjusted for new action space)
+        # Penalize excessive drug use, with remifentanil weighted more (more potent)
+        drug_penalty = -0.01 * (ppf_rate + rftn_rate * 10.0)
+        
+        # 4. Safety penalties (stronger)
         safety_penalty = 0.0
-        if self.bis < 20:  # Too deep (dangerous)
-            safety_penalty -= 10.0
+        if self.bis < 30:  # Dangerously deep
+            safety_penalty = -100.0
+        elif self.bis < 20:  # Critically deep
+            safety_penalty = -200.0
         elif self.bis > 70:  # Risk of awareness
-            safety_penalty -= 5.0
+            safety_penalty = -100.0
+        elif bis_error > 30:  # Far from target
+            safety_penalty = -10.0
         
-        # Action smoothness reward (penalize rapid changes)
+        # 5. Action smoothness reward (penalize rapid changes)
         action_change_ppf = abs(ppf_rate - self.prev_action_ppf)
         action_change_rftn = abs(rftn_rate - self.prev_action_rftn)
-        smoothness_penalty = -0.1 * (action_change_ppf + action_change_rftn)
+        smoothness_penalty = -0.1 * (action_change_ppf + action_change_rftn * 2.0)  # Weight rftn changes more
         
         # Total reward
         reward = bis_reward + drug_penalty + safety_penalty + smoothness_penalty

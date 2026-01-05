@@ -78,8 +78,12 @@ class VitalDBLoader:
         # Filter for cases with BIS data and sufficient duration
         available_cases = []
         
-        # Check first 200 cases
-        check_cases = ppf_cases[:min(200, len(ppf_cases))]
+        # Check first N cases
+        # Dual drug needs more data, so scan more cases
+        max_check = 200  # Can be adjusted via parameter
+        check_cases = ppf_cases[:min(max_check, len(ppf_cases))]
+        
+        print(f"  Scanning first {len(check_cases)} cases (out of {len(ppf_cases)} total)...")
         
         for caseid in tqdm(check_cases, desc="Checking cases"):
             try:

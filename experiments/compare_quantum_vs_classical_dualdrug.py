@@ -61,17 +61,17 @@ def parse_args():
     )
     
     # VitalDB data
-    parser.add_argument('--n_cases', type=int, default=1000,
+    parser.add_argument('--n_cases', type=int, default=6000,
                        help='Number of VitalDB dual drug cases to load')
-    parser.add_argument('--sampling_interval', type=int, default=1,
+    parser.add_argument('--sampling_interval', type=int, default=5,
                        help='Sampling interval for VitalDB data (1=all data, 5=every 5 seconds)')
-    parser.add_argument('--offline_epochs', type=int, default=100,
+    parser.add_argument('--offline_epochs', type=int, default=50,
                        help='Number of offline pre-training epochs')
     parser.add_argument('--batch_size', type=int, default=256,
                        help='Batch size for offline training')
-    parser.add_argument('--num_workers', type=int, default=4,
+    parser.add_argument('--num_workers', type=int, default=8,
                        help='Number of DataLoader workers for parallel loading')
-    parser.add_argument('--bc_weight', type=float, default=1.0,
+    parser.add_argument('--bc_weight', type=float, default=0.8,
                        help='Behavioral cloning weight')
     
     # CQL (Conservative Q-Learning) parameters
@@ -83,7 +83,7 @@ def parse_args():
                        help='Temperature for CQL logsumexp')
     parser.add_argument('--cql_num_random', type=int, default=5,
                        help='Number of random actions for CQL penalty')
-    parser.add_argument('--cql_warmup_epochs', type=int, default=50,
+    parser.add_argument('--cql_warmup_epochs', type=int, default=10,
                        help='Number of epochs to use CQL penalty (after this, only BC+RL)')
     
     # Training
@@ -105,6 +105,11 @@ def parse_args():
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed')
     
+    # Reward function
+    parser.add_argument('--reward_type', type=str, default='potential',
+                       choices=['simple', 'paper', 'hybrid', 'potential'],
+                       help='Reward function type: simple (original), paper (equation 1-3), hybrid (dense+sparse), potential (potential-based shaping)')
+    
     # Directories
     parser.add_argument('--config', type=str, 
                        default='config/hyperparameters.yaml',
@@ -125,7 +130,8 @@ def evaluate_agent_on_simulator_dualdrug(
     agent, 
     n_episodes: int, 
     seed: int,
-    device: torch.device
+    device: torch.device,
+    reward_type: str = 'potential'
 ) -> Dict:
     """
     Evaluate agent on dual drug simulator.
@@ -134,6 +140,13 @@ def evaluate_agent_on_simulator_dualdrug(
     - DualDrugEnv instead of PropofolEnv
     - Action is 2D: [propofol_rate, remifentanil_rate]
     - State is 13D (includes remifentanil Ce + patient demographics)
+    
+    Args:
+        agent: Agent to evaluate
+        n_episodes: Number of episodes
+        seed: Random seed
+        device: Torch device
+        reward_type: Reward function type ('simple', 'paper', 'hybrid', 'potential')
     """
     patients = create_patient_population(n_patients=n_episodes, seed=seed)
     
@@ -144,8 +157,8 @@ def evaluate_agent_on_simulator_dualdrug(
     time_in_target = []
     
     for i, patient in enumerate(tqdm(patients, desc="Evaluating on Dual Drug Simulator")):
-        # Create dual drug environment
-        env = DualDrugEnv(patient=patient, seed=seed + i)
+        # Create dual drug environment with specified reward type
+        env = DualDrugEnv(patient=patient, seed=seed + i, reward_type=reward_type)
         
         state, _ = env.reset()
         episode_reward = 0
@@ -1065,12 +1078,12 @@ def main():
     
     print(f"\nEvaluating Quantum agent on simulator...")
     quantum_sim_results = evaluate_agent_on_simulator_dualdrug(
-        quantum_agent, args.n_test_episodes, args.seed + 2000, device
+        quantum_agent, args.n_test_episodes, args.seed + 2000, device, args.reward_type
     )
     
     print(f"\nEvaluating Classical agent on simulator...")
     classical_sim_results = evaluate_agent_on_simulator_dualdrug(
-        classical_agent, args.n_test_episodes, args.seed + 3000, device
+        classical_agent, args.n_test_episodes, args.seed + 3000, device, args.reward_type
     )
     
     print(f"\n✓ Simulator Results:")
@@ -1151,6 +1164,7 @@ def main():
         f.write(f"Online episodes: {args.online_episodes}\n")
         f.write(f"Test episodes: {args.n_test_episodes}\n")
         f.write(f"Encoder: {args.encoder}\n")
+        f.write(f"Reward type: {args.reward_type}\n")
         f.write(f"Seed: {args.seed}\n\n")
         
         f.write("VITALDB TEST SET RESULTS\n")

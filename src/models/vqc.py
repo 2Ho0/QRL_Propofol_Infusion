@@ -271,10 +271,17 @@ class QuantumPolicy(nn.Module):
         )
         
         # Output scaling layer
+        output_layer = nn.Linear(16, self.action_dim)
+        
+        # Initialize bias to encourage higher initial actions
+        # sigmoid(0.5) ≈ 0.62, preventing quantum policy from outputting very low actions
+        # This is critical for meaningful drug infusion control
+        nn.init.constant_(output_layer.bias, 0.5)
+        
         self.output_scale = nn.Sequential(
             nn.Linear(1, 16),
             nn.ReLU(),
-            nn.Linear(16, self.action_dim),
+            output_layer,
             nn.Sigmoid()  # Output in [0, 1]
         )
     

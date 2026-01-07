@@ -63,7 +63,7 @@ def parse_args():
     # VitalDB data
     parser.add_argument('--n_cases', type=int, default=6000,
                        help='Number of VitalDB dual drug cases to load')
-    parser.add_argument('--sampling_interval', type=int, default=5,
+    parser.add_argument('--sampling_interval', type=int, default=60,
                        help='Sampling interval for VitalDB data (1=all data, 5=every 5 seconds)')
     parser.add_argument('--offline_epochs', type=int, default=50,
                        help='Number of offline pre-training epochs')
@@ -75,7 +75,7 @@ def parse_args():
                        help='Behavioral cloning weight')
     
     # CQL (Conservative Q-Learning) parameters
-    parser.add_argument('--use_cql', action='store_true',
+    parser.add_argument('--use_cql', type=bool, default=False,
                        help='Use CQL instead of standard off-policy RL')
     parser.add_argument('--cql_alpha', type=float, default=1.0,
                        help='CQL penalty weight')
@@ -245,10 +245,13 @@ def evaluate_agent_on_simulator_dualdrug(
         'reward_list': rewards_total,
         'propofol_usage_mean': np.mean(propofol_usage),
         'propofol_usage_std': np.std(propofol_usage),
+        'propofol_usage_list': propofol_usage,
         'remifentanil_usage_mean': np.mean(remifentanil_usage),
         'remifentanil_usage_std': np.std(remifentanil_usage),
+        'remifentanil_usage_list': remifentanil_usage,
         'time_in_target_mean': np.mean(time_in_target),
-        'time_in_target_std': np.std(time_in_target)
+        'time_in_target_std': np.std(time_in_target),
+        'time_in_target_list': time_in_target
     }
 
 
@@ -296,6 +299,12 @@ def save_results_to_csv(
         'Classical_MDAPE': classical_results['mdape_list'],
         'Quantum_Reward': quantum_results['reward_list'],
         'Classical_Reward': classical_results['reward_list'],
+        'Quantum_Propofol': quantum_results['propofol_usage_list'],
+        'Classical_Propofol': classical_results['propofol_usage_list'],
+        'Quantum_Remifentanil': quantum_results['remifentanil_usage_list'],
+        'Classical_Remifentanil': classical_results['remifentanil_usage_list'],
+        'Quantum_TimeInTarget': quantum_results['time_in_target_list'],
+        'Classical_TimeInTarget': classical_results['time_in_target_list'],
     }
     df_episodes = pd.DataFrame(episode_data)
     df_episodes.to_csv(save_dir / 'episode_results.csv', index=False)

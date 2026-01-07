@@ -36,6 +36,7 @@ sys.path.append(str(Path(__file__).parent.parent / 'src'))
 import argparse
 import pickle
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -611,13 +612,23 @@ def stage1_offline_pretraining(
         train_history['bc_loss'].append(avg_train_bc)
         train_history['rl_loss'].append(avg_train_rl)
         
-        # Periodic logging
+        # 매 epoch마다 간단한 로그 (한 줄)
+        cql_status = "CQL" if use_cql_this_epoch else "STD"
+        print(f"Epoch {epoch+1:3d}/{n_epochs} [{cql_status}] | Train: {avg_train_total:7.4f} | Val: {avg_val_loss:7.4f} | BC: {avg_train_bc:7.4f} | RL: {avg_train_rl:7.4f} | Time: {epoch_time:5.1f}s | ETA: {eta_minutes:5.1f}m")
+        
+        # Periodic detailed logging
         if epoch % eval_interval == 0 or epoch == n_epochs - 1:
-            cql_status = "ON" if use_cql_this_epoch else "OFF"
-            print(f"\n  Epoch {epoch+1}/{n_epochs} [CQL: {cql_status}]:")
-            print(f"    Train - BC: {avg_train_bc:.4f}, RL: {avg_train_rl:.4f}, Total: {avg_train_total:.4f}")
-            print(f"    Val Loss: {avg_val_loss:.4f}")
-            print(f"    Time: {epoch_time:.1f}s | Avg: {avg_epoch_time:.1f}s | ETA: {eta_minutes:.1f}min")
+            print(f"\n  {'='*60}")
+            print(f"  Epoch {epoch+1}/{n_epochs} Detailed Stats:")
+            print(f"  {'='*60}")
+            print(f"  Training Losses:")
+            print(f"    - BC Loss (Behavioral Cloning): {avg_train_bc:.4f}")
+            print(f"    - RL Loss (Policy Gradient):    {avg_train_rl:.4f}")
+            print(f"    - Total Train Loss:             {avg_train_total:.4f}")
+            print(f"  Validation Loss:                  {avg_val_loss:.4f}")
+            print(f"  Train-Val Gap:                    {avg_train_total - avg_val_loss:+.4f}")
+            print(f"  Time: {epoch_time:.1f}s (avg: {avg_epoch_time:.1f}s) | ETA: {eta_minutes:.1f}min")
+            print(f"  {'='*60}")
         
         # Save best model
         if avg_val_loss < best_val_loss:
@@ -636,9 +647,21 @@ def stage1_offline_pretraining(
     final_path = dirs['stage1'] / 'final.pt'
     agent.save(str(final_path))
     
-    # Save training history
+    # Save training history (pickle)
     with open(dirs['stage1'] / 'training_history.pkl', 'wb') as f:
         pickle.dump(train_history, f)
+    
+    # Save training history to CSV
+    loss_df = pd.DataFrame({
+        'epoch': range(1, n_epochs + 1),
+        'train_loss': train_history['train_loss'],
+        'val_loss': train_history['val_loss'],
+        'bc_loss': train_history['bc_loss'],
+        'rl_loss': train_history['rl_loss']
+    })
+    loss_csv_path = dirs['stage1'] / 'loss_history.csv'
+    loss_df.to_csv(loss_csv_path, index=False)
+    print(f"✓ Loss history saved to CSV: {loss_csv_path}")
     
     print(f"\n✓ Stage 1 Complete: Offline Pre-training")
     print(f"  Best validation loss: {best_val_loss:.4f}")
@@ -712,19 +735,31 @@ def stage2_online_finetuning(
     best_reward = -float('inf')
     best_mdape = float('inf')
     
-    print(f"\nStarting online fine-tuning...\n")
+    # Create file for logging episode rewards
+    rewards_log_path = dirs['stage2'] / 'episode_rewards.txt'
+    rewards_log_file = open(rewards_log_path, 'w')
+    
+    print(f"\nStarting online fine-tuning...")
+    print(f"Logging rewards to: {rewards_log_path}\n")
+    
+    # Training metrics tracking
+    episode_steps = []
+    episode_actor_losses = []
+    episode_critic_losses = []
     
     for episode in tqdm(range(n_episodes), desc="Online Fine-tuning"):
         state, _ = env.reset()
         agent.reset_noise()
         
         episode_reward = 0.0
+        episode_step = 0
         done = False
         
         # Enable exploration after warmup
         add_noise = episode >= warmup_episodes
         
         while not done:
+            episode_step += 1
             # Select action (Quantum Actor)
             action = agent.select_action(state, add_noise=add_noise)
             
@@ -744,6 +779,7 @@ def stage2_online_finetuning(
             agent.decay_noise()
         
         # Record metrics
+        episode_steps.append(episode_step)
         if hasattr(env, 'get_episode_metrics'):
             metrics = env.get_episode_metrics()
             episode_mdape.append(metrics.get('mdape', 0))
@@ -754,6 +790,16 @@ def stage2_online_finetuning(
             episode_time_in_target.append(0)
         
         episode_rewards.append(episode_reward)
+        
+        # 매 episode 간단한 로그 (10 episode마다)
+        if (episode + 1) % 10 == 0 or episode == 0:
+            noise_status = "Explore" if add_noise else "Warmup"
+            recent_reward = np.mean(episode_rewards[-10:]) if len(episode_rewards) >= 10 else episode_reward
+            print(f"Ep {episode+1:4d}/{n_episodes} [{noise_status:7s}] | Reward: {episode_reward:7.2f} (avg: {recent_reward:7.2f}) | Steps: {episode_step:3d}")
+        
+        # Log reward to file
+        rewards_log_file.write(f"{episode_reward}\n")
+        rewards_log_file.flush()
         
         # Periodic evaluation
         if (episode + 1) % eval_interval == 0 or episode == n_episodes - 1:
@@ -782,13 +828,21 @@ def stage2_online_finetuning(
                     eval_mdapes.append(metrics['mdape'])
                 eval_rewards.append(episode_reward)
             
-            print(f"\n  Episode {episode+1}/{n_episodes}:")
-            print(f"    Avg Reward (last {eval_interval}): {avg_reward:.2f}")
+            print(f"\n  {'='*60}")
+            print(f"  Episode {episode+1}/{n_episodes} Evaluation:")
+            print(f"  {'='*60}")
+            print(f"  Training Performance (last {eval_interval} episodes):")
+            print(f"    - Avg Reward:        {avg_reward:7.2f}")
+            print(f"    - Min/Max Reward:    {np.min(episode_rewards[-eval_interval:]):7.2f} / {np.max(episode_rewards[-eval_interval:]):7.2f}")
             if hasattr(env, 'get_episode_metrics'):
-                print(f"    Avg MDAPE (last {eval_interval}): {avg_mdape:.2f}%")
-                print(f"    Avg Time in Target: {avg_tit:.1f}%")
-                if eval_mdapes:
-                    print(f"    Eval (5 patients): MDAPE={np.mean(eval_mdapes):.2f}%")
+                print(f"    - Avg MDAPE:         {avg_mdape:7.2f}%")
+                print(f"    - Avg Time in Target: {avg_tit:6.1f}%")
+            print(f"    - Avg Steps:         {np.mean(episode_steps[-eval_interval:]):.1f}")
+            if eval_mdapes:
+                print(f"  Test Performance (5 patients):")
+                print(f"    - MDAPE:             {np.mean(eval_mdapes):7.2f}% ± {np.std(eval_mdapes):.2f}%")
+                print(f"    - Rewards:           {np.mean(eval_rewards):7.2f} ± {np.std(eval_rewards):.2f}")
+            print(f"  {'='*60}")
             
             # Save best models
             if avg_reward > best_reward:
@@ -805,7 +859,10 @@ def stage2_online_finetuning(
     final_path = dirs['stage2'] / 'final.pt'
     agent.save(str(final_path))
     
-    # Save training history
+    # Close rewards log file
+    rewards_log_file.close()
+    
+    # Save training history (pickle)
     history = {
         'rewards': episode_rewards,
         'mdape': episode_mdape,
@@ -813,6 +870,19 @@ def stage2_online_finetuning(
     }
     with open(dirs['stage2'] / 'training_history.pkl', 'wb') as f:
         pickle.dump(history, f)
+    
+    # Save training history to CSV
+    episode_df = pd.DataFrame({
+        'episode': range(1, n_episodes + 1),
+        'reward': episode_rewards,
+        'mdape': episode_mdape,
+        'time_in_target': episode_time_in_target,
+        'steps': episode_steps,
+        'phase': ['warmup' if i < warmup_episodes else 'exploration' for i in range(n_episodes)]
+    })
+    episode_csv_path = dirs['stage2'] / 'episode_history.csv'
+    episode_df.to_csv(episode_csv_path, index=False)
+    print(f"✓ Episode history saved to CSV: {episode_csv_path}")
     
     print(f"\n✓ Stage 2 Complete: Online Fine-tuning")
     print(f"  Best reward: {best_reward:.2f}")

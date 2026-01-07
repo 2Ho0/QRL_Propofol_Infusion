@@ -724,7 +724,14 @@ class ActorNetwork(nn.Module):
             prev_dim = hidden_dim
         
         # Output layer with sigmoid for [0, 1] action
-        layers.append(nn.Linear(prev_dim, action_dim))
+        output_layer = nn.Linear(prev_dim, action_dim)
+        
+        # Initialize bias to encourage higher initial actions
+        # sigmoid(0.5) ≈ 0.62, which prevents network from getting stuck at low outputs
+        # This is critical for drug infusion where we need meaningful initial doses
+        nn.init.constant_(output_layer.bias, 0.5)
+        
+        layers.append(output_layer)
         layers.append(nn.Sigmoid())
         
         self.layers = nn.Sequential(*layers)

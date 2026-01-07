@@ -89,7 +89,14 @@ class MLPActor(nn.Module):
             prev_dim = hidden_dim
         
         # Output layer with Sigmoid for [0, 1] action
-        layers.append(nn.Linear(prev_dim, output_dim))
+        output_layer = nn.Linear(prev_dim, output_dim)
+        
+        # Initialize bias to encourage higher initial actions
+        # sigmoid(0.5) ≈ 0.62, which maps to ~0.62 * action_scale
+        # This prevents the network from getting stuck at very low outputs
+        nn.init.constant_(output_layer.bias, 0.5)
+        
+        layers.append(output_layer)
         layers.append(nn.Sigmoid())
         
         self.network = nn.Sequential(*layers)

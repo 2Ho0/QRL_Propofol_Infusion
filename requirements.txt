@@ -5,12 +5,19 @@
 pennylane>=0.33.0
 pennylane-lightning>=0.33.0
 
-# VitalDB for real clinical data
-vitaldb>=1.5.0
-
 # Deep Learning
 torch>=2.0.0
 torchvision>=0.15.0
+
+# JAX for Quantum Circuit Optimization
+# Note: JAX 0.4.30 is required for PennyLane compatibility
+jax==0.4.30
+jaxlib==0.4.30
+
+# Scientific Computing
+# Note: NumPy < 2.0 required for JAX compatibility
+numpy>=1.24.0,<2.0
+scipy>=1.10.0,<1.14
 
 # Reinforcement Learning
 gymnasium>=0.29.0
@@ -29,6 +36,14 @@ pyyaml>=6.0
 # Utilities
 tqdm>=4.65.0
 tensorboard>=2.13.0
+
+# VitalDB for real patient data
+vitaldb>=1.7.0
+
+# Data Processing for Offline RL
+h5py>=3.8.0
+pandas>=2.0.0
+pyarrow>=12.0.0
 
 # Optional: for Jupyter notebooks
 # jupyter>=1.0.0

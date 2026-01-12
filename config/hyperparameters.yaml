@@ -209,10 +209,11 @@ training:
   total_episodes: 1000
   max_steps_per_episode: 720  # 3600s / 5s = 720 steps
   
-  # Learning Rates
-  actor_lr: 0.0001            # Learning rate for quantum policy
+  # Learning Rates (optimized for BC-only training)
+  actor_lr: 0.0003            # Higher learning rate for supervised BC
   critic_lr: 0.001            # Learning rate for critic
-  encoder_lr: 0.001           # Learning rate for encoder
+  encoder_lr: 0.0005          # Learning rate for encoder
+  weight_decay: 0.00001       # L2 regularization (1e-5)
   
   # Discount factor
   gamma: 0.99

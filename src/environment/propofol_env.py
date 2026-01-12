@@ -399,10 +399,34 @@ class PropofolEnv(gym.Env):
         # Reset state tracking
         self.current_step = 0
         self.prev_dose = 0.0
-        self.prev_bis = 97.0  # Awake BIS
-        self.bis_history = [97.0] * 5  # Initialize with awake BIS
-        self.dose_ppf_history = [0.0] * self.history_window  # Formulation (38)
-        self.dose_rftn_history = [0.0] * self.history_window  # Formulation (39)
+        
+        # Start from maintenance phase (like VitalDB data) instead of awake state
+        # Apply induction bolus + wait for equilibration to match offline training distribution
+        if self.enable_bolus:
+            # Give induction bolus
+            self.simulator.administer_bolus(self.bolus_dose, drug="propofol")
+            
+            # Simulate induction phase (3-5 minutes) to reach maintenance BIS
+            # This matches VitalDB data distribution (BIS 45-55)
+            induction_steps = 40  # ~3 minutes
+            induction_rate = 100.0  # μg/kg/min during induction
+            
+            for _ in range(induction_steps):
+                rftn_rate = self.rftn_schedule.get_rate(self.simulator.time, self.dt)
+                _, bis = self.simulator.step(induction_rate, rftn_rate=rftn_rate)
+                self.bis_history.append(bis)
+                self.dose_ppf_history.append(induction_rate)
+                self.dose_rftn_history.append(rftn_rate)
+            
+            self.prev_bis = bis
+            # Now BIS should be ~45-55, matching VitalDB training distribution
+        else:
+            # No bolus: start from awake state (original behavior)
+            self.prev_bis = 97.0  # Awake BIS
+            
+        self.bis_history = self.bis_history[-5:] if len(self.bis_history) >= 5 else [self.prev_bis] * 5
+        self.dose_ppf_history = self.dose_ppf_history[-self.history_window:] if len(self.dose_ppf_history) >= self.history_window else [0.0] * self.history_window
+        self.dose_rftn_history = self.dose_rftn_history[-self.history_window:] if len(self.dose_rftn_history) >= self.history_window else [0.0] * self.history_window
         
         # Clear episode history
         self.episode_history = {
@@ -414,16 +438,6 @@ class PropofolEnv(gym.Env):
             'reward': [],
             'time': []
         }
-        
-        # Apply induction bolus if enabled
-        if self.enable_bolus:
-            self.simulator.administer_bolus(self.bolus_dose, drug="propofol")
-            # Step forward a bit to let bolus take effect
-            for _ in range(3):  # 15 seconds
-                rftn_rate = self.rftn_schedule.get_rate(self.simulator.time, self.dt)
-                _, bis = self.simulator.step(0.0, rftn_rate=rftn_rate)
-                self.bis_history.append(bis)
-                self.prev_bis = bis
         
         # Get initial observation
         observation = self._get_observation()
@@ -500,9 +514,14 @@ class PropofolEnv(gym.Env):
         truncated = False
         
         # Episode ends if BIS goes critically low (patient safety)
-        if bis < 20:
+        # Relaxed from 20 to 15 to give agent more room to recover
+        if bis < 15:
             terminated = True
             reward += -100.0  # Large penalty for dangerous state
+        # Also terminate if BIS goes too high (patient waking up)
+        elif bis > 80:
+            terminated = True
+            reward += -50.0  # Penalty for losing anesthesia
         
         # Episode truncated if max steps reached
         if self.current_step >= self.max_steps:

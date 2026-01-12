@@ -56,7 +56,8 @@ class MLPActor(nn.Module):
         input_dim: int,
         output_dim: int = 1,
         hidden_dims: List[int] = [256, 128, 64],
-        activation: str = 'relu'
+        activation: str = 'relu',
+        dropout: float = 0.1
     ):
         """
         Initialize MLP Actor.
@@ -71,13 +72,18 @@ class MLPActor(nn.Module):
         
         self.input_dim = input_dim
         self.output_dim = output_dim
+        self.dropout = dropout
         
         # Build network
         layers = []
         prev_dim = input_dim
         
-        for hidden_dim in hidden_dims:
+        for i, hidden_dim in enumerate(hidden_dims):
             layers.append(nn.Linear(prev_dim, hidden_dim))
+            
+            # Xavier initialization for better convergence
+            nn.init.xavier_uniform_(layers[-1].weight)
+            nn.init.zeros_(layers[-1].bias)
             
             if activation == 'relu':
                 layers.append(nn.ReLU())
@@ -86,15 +92,21 @@ class MLPActor(nn.Module):
             elif activation == 'elu':
                 layers.append(nn.ELU())
             
+            # Add dropout for regularization (helps BC generalization)
+            if dropout > 0 and i < len(hidden_dims) - 1:
+                layers.append(nn.Dropout(dropout))
+            
             prev_dim = hidden_dim
         
         # Output layer with Sigmoid for [0, 1] action
         output_layer = nn.Linear(prev_dim, output_dim)
         
-        # Initialize bias to encourage higher initial actions
-        # sigmoid(0.5) ≈ 0.62, which maps to ~0.62 * action_scale
-        # This prevents the network from getting stuck at very low outputs
-        nn.init.constant_(output_layer.bias, 0.5)
+        # Initialize bias to match VitalDB data distribution
+        # VitalDB typical normalized actions: 0.3-0.5 (60-100 μg/kg/min)
+        # sigmoid(0.0) = 0.5 (good starting point for BC)
+        # For BC-only training, start near data mean
+        nn.init.xavier_uniform_(output_layer.weight)
+        nn.init.constant_(output_layer.bias, -1.0)
         
         layers.append(output_layer)
         layers.append(nn.Sigmoid())
@@ -255,13 +267,16 @@ class ClassicalDDPGAgent:
             param.requires_grad = False
         
         # Optimizers
+        # Higher learning rate for BC (supervised learning)
         self.actor_optimizer = optim.Adam(
             self.actor.parameters(),
-            lr=training_config.get('actor_lr', 0.0001)
+            lr=training_config.get('actor_lr', 0.0003),
+            weight_decay=training_config.get('weight_decay', 1e-5)  # L2 regularization
         )
         self.critic_optimizer = optim.Adam(
             self.critic.parameters(),
-            lr=training_config.get('critic_lr', 0.001)
+            lr=training_config.get('critic_lr', 0.001),
+            weight_decay=training_config.get('weight_decay', 1e-5)
         )
         
         if self.encoder is not None:
@@ -337,9 +352,10 @@ class ClassicalDDPGAgent:
                 'gamma': 0.99,
                 'tau': 0.005,
                 'batch_size': 64,
-                'actor_lr': 0.0001,
+                'actor_lr': 0.0003,  # Higher for BC
                 'critic_lr': 0.001,
-                'encoder_lr': 0.001,
+                'encoder_lr': 0.0005,
+                'weight_decay': 1e-5,  # L2 regularization
                 'buffer_size': 100000,
                 'warmup_steps': 1000,
                 'update_every': 1,

@@ -99,7 +99,7 @@ def parse_args():
                        help='Action dimension (propofol + remifentanil)')
     parser.add_argument('--n_qubits', type=int, default=3,
                        help='Number of qubits for quantum circuit (3 qubits for 13D state)')
-    parser.add_argument('--encoder', type=str, default='none',
+    parser.add_argument('--encoder', type=str, default='transformer',
                        choices=['none', 'lstm', 'transformer'],
                        help='Temporal encoder type')
     parser.add_argument('--seed', type=int, default=42,
@@ -253,6 +253,82 @@ def evaluate_agent_on_simulator_dualdrug(
         'time_in_target_std': np.std(time_in_target),
         'time_in_target_list': time_in_target
     }
+
+
+def save_single_agent_csv(
+    results: Dict,
+    agent_name: str,
+    save_dir: Path
+) -> None:
+    """
+    Save detailed results for a single agent to CSV.
+    
+    Args:
+        results: Agent evaluation results
+        agent_name: Name of the agent
+        save_dir: Directory to save CSV
+    """
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Episode-by-episode detailed results
+    n_episodes = len(results['mdape_list'])
+    episode_data = {
+        'Episode': list(range(1, n_episodes + 1)),
+        'MDAPE': results['mdape_list'],
+        'Reward': results['reward_list'],
+        'Propofol_Usage': results['propofol_usage_list'],
+        'Remifentanil_Usage': results['remifentanil_usage_list'],
+        'Time_in_Target': results['time_in_target_list']
+    }
+    df = pd.DataFrame(episode_data)
+    csv_path = save_dir / f'{agent_name.lower()}_episode_details.csv'
+    df.to_csv(csv_path, index=False)
+    print(f"✓ {agent_name} episode details saved to: {csv_path}")
+    
+    # Summary statistics
+    summary_data = {
+        'Metric': ['MDAPE', 'Reward', 'Propofol_Usage', 'Remifentanil_Usage', 'Time_in_Target'],
+        'Mean': [
+            results['mdape_mean'],
+            results['reward_mean'],
+            results['propofol_usage_mean'],
+            results['remifentanil_usage_mean'],
+            results['time_in_target_mean']
+        ],
+        'Std': [
+            results['mdape_std'],
+            results['reward_std'],
+            results['propofol_usage_std'],
+            results['remifentanil_usage_std'],
+            results['time_in_target_std']
+        ],
+        'Min': [
+            np.min(results['mdape_list']),
+            np.min(results['reward_list']),
+            np.min(results['propofol_usage_list']),
+            np.min(results['remifentanil_usage_list']),
+            np.min(results['time_in_target_list'])
+        ],
+        'Max': [
+            np.max(results['mdape_list']),
+            np.max(results['reward_list']),
+            np.max(results['propofol_usage_list']),
+            np.max(results['remifentanil_usage_list']),
+            np.max(results['time_in_target_list'])
+        ],
+        'Median': [
+            np.median(results['mdape_list']),
+            np.median(results['reward_list']),
+            np.median(results['propofol_usage_list']),
+            np.median(results['remifentanil_usage_list']),
+            np.median(results['time_in_target_list'])
+        ]
+    }
+    df_summary = pd.DataFrame(summary_data)
+    summary_path = save_dir / f'{agent_name.lower()}_summary_statistics.csv'
+    df_summary.to_csv(summary_path, index=False)
+    print(f"✓ {agent_name} summary statistics saved to: {summary_path}")
 
 
 def save_results_to_csv(
@@ -518,6 +594,135 @@ def evaluate_on_vitaldb_test_set(
         'mdape_remifentanil': mdape_rftn,
         'mdape_list': [mdape_ppf, mdape_rftn]
     }
+
+
+def plot_single_agent_results(
+    results: Dict,
+    agent_name: str,
+    save_dir: Path
+):
+    """
+    Generate detailed plots for a single agent.
+    
+    Args:
+        results: Agent evaluation results
+        agent_name: Name of the agent (e.g., 'Classical', 'Quantum')
+        save_dir: Directory to save plots
+    """
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    fig.suptitle(f'{agent_name} Agent Performance (Dual Drug)', fontsize=16, fontweight='bold')
+    
+    # 1. MDAPE Distribution
+    ax = axes[0, 0]
+    mdape_list = results['mdape_list']
+    if len(mdape_list) >= 2:
+        ax.hist(mdape_list, bins=min(20, len(mdape_list)), alpha=0.7, color='steelblue', edgecolor='black')
+        ax.axvline(results['mdape_mean'], color='red', linestyle='--', linewidth=2, label=f"Mean: {results['mdape_mean']:.1f}%")
+        ax.legend()
+    else:
+        ax.bar([1], [results['mdape_mean']], color='steelblue', alpha=0.7)
+        ax.set_xticks([1])
+        ax.set_xticklabels([f"{results['mdape_mean']:.1f}%"])
+    ax.set_xlabel('MDAPE (%)', fontsize=11)
+    ax.set_ylabel('Frequency', fontsize=11)
+    ax.set_title('MDAPE Distribution', fontsize=12, fontweight='bold')
+    ax.grid(axis='y', alpha=0.3)
+    
+    # 2. Reward Distribution
+    ax = axes[0, 1]
+    reward_list = results['reward_list']
+    if len(reward_list) >= 2:
+        ax.hist(reward_list, bins=min(20, len(reward_list)), alpha=0.7, color='green', edgecolor='black')
+        ax.axvline(results['reward_mean'], color='red', linestyle='--', linewidth=2, label=f"Mean: {results['reward_mean']:.1f}")
+        ax.legend()
+    else:
+        ax.bar([1], [results['reward_mean']], color='green', alpha=0.7)
+        ax.set_xticks([1])
+        ax.set_xticklabels([f"{results['reward_mean']:.1f}"])
+    ax.set_xlabel('Total Reward', fontsize=11)
+    ax.set_ylabel('Frequency', fontsize=11)
+    ax.set_title('Reward Distribution', fontsize=12, fontweight='bold')
+    ax.grid(axis='y', alpha=0.3)
+    
+    # 3. Time in Target
+    ax = axes[0, 2]
+    tit_list = results['time_in_target_list']
+    if len(tit_list) >= 2:
+        ax.hist(tit_list, bins=min(20, len(tit_list)), alpha=0.7, color='orange', edgecolor='black')
+        ax.axvline(results['time_in_target_mean'], color='red', linestyle='--', linewidth=2, 
+                  label=f"Mean: {results['time_in_target_mean']:.1f}%")
+        ax.legend()
+    else:
+        ax.bar([1], [results['time_in_target_mean']], color='orange', alpha=0.7)
+        ax.set_xticks([1])
+        ax.set_xticklabels([f"{results['time_in_target_mean']:.1f}%"])
+    ax.set_xlabel('Time in Target (%)', fontsize=11)
+    ax.set_ylabel('Frequency', fontsize=11)
+    ax.set_title('Time in Target (BIS 45-55)', fontsize=12, fontweight='bold')
+    ax.grid(axis='y', alpha=0.3)
+    
+    # 4. Propofol Usage
+    ax = axes[1, 0]
+    ppf_list = results['propofol_usage_list']
+    if len(ppf_list) >= 2:
+        ax.hist(ppf_list, bins=min(20, len(ppf_list)), alpha=0.7, color='purple', edgecolor='black')
+        ax.axvline(results['propofol_usage_mean'], color='red', linestyle='--', linewidth=2,
+                  label=f"Mean: {results['propofol_usage_mean']:.2f} mg/kg/h")
+        ax.legend()
+    else:
+        ax.bar([1], [results['propofol_usage_mean']], color='purple', alpha=0.7)
+        ax.set_xticks([1])
+        ax.set_xticklabels([f"{results['propofol_usage_mean']:.2f}"])
+    ax.set_xlabel('Propofol Rate (mg/kg/h)', fontsize=11)
+    ax.set_ylabel('Frequency', fontsize=11)
+    ax.set_title('Propofol Usage', fontsize=12, fontweight='bold')
+    ax.grid(axis='y', alpha=0.3)
+    
+    # 5. Remifentanil Usage
+    ax = axes[1, 1]
+    rftn_list = results['remifentanil_usage_list']
+    if len(rftn_list) >= 2:
+        ax.hist(rftn_list, bins=min(20, len(rftn_list)), alpha=0.7, color='brown', edgecolor='black')
+        ax.axvline(results['remifentanil_usage_mean'], color='red', linestyle='--', linewidth=2,
+                  label=f"Mean: {results['remifentanil_usage_mean']:.2f} μg/kg/min")
+        ax.legend()
+    else:
+        ax.bar([1], [results['remifentanil_usage_mean']], color='brown', alpha=0.7)
+        ax.set_xticks([1])
+        ax.set_xticklabels([f"{results['remifentanil_usage_mean']:.2f}"])
+    ax.set_xlabel('Remifentanil Rate (μg/kg/min)', fontsize=11)
+    ax.set_ylabel('Frequency', fontsize=11)
+    ax.set_title('Remifentanil Usage', fontsize=12, fontweight='bold')
+    ax.grid(axis='y', alpha=0.3)
+    
+    # 6. Summary Statistics
+    ax = axes[1, 2]
+    ax.axis('off')
+    summary_text = f"""{agent_name} Agent Summary
+{'='*30}
+
+Performance Metrics:
+  MDAPE: {results['mdape_mean']:.2f}% ± {results['mdape_std']:.2f}%
+  Reward: {results['reward_mean']:.2f} ± {results['reward_std']:.2f}
+  Time in Target: {results['time_in_target_mean']:.1f}% ± {results['time_in_target_std']:.1f}%
+
+Drug Usage:
+  Propofol: {results['propofol_usage_mean']:.2f} ± {results['propofol_usage_std']:.2f} mg/kg/h
+  Remifentanil: {results['remifentanil_usage_mean']:.2f} ± {results['remifentanil_usage_std']:.2f} μg/kg/min
+
+Episodes Evaluated: {len(results['mdape_list'])}
+"""
+    ax.text(0.1, 0.5, summary_text, fontsize=11, verticalalignment='center', 
+           family='monospace', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+    
+    plt.tight_layout()
+    save_path = save_dir / f'{agent_name.lower()}_detailed_results.png'
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"✓ {agent_name} detailed plot saved to: {save_path}")
+    plt.close()
 
 
 def plot_dualdrug_comparison(
@@ -839,114 +1044,6 @@ def main():
     print("="*70)
     
     # ========================================
-    # Train Quantum Agent (2-Stage)
-    # ========================================
-    print("\n" + "="*70)
-    print("TRAINING QUANTUM AGENT (2-STAGE: OFFLINE + ONLINE)")
-    print("="*70)
-    
-    quantum_agent = QuantumDDPGAgent(
-        state_dim=args.state_dim,   # 10D state
-        action_dim=args.action_dim,  # 2D action
-        config=config,
-        encoder_type=args.encoder,
-        seed=args.seed
-    )
-    
-    # Move to device FIRST
-    quantum_agent.actor = quantum_agent.actor.to(device)
-    quantum_agent.actor_target = quantum_agent.actor_target.to(device)
-    quantum_agent.critic = quantum_agent.critic.to(device)
-    quantum_agent.critic_target = quantum_agent.critic_target.to(device)
-    if quantum_agent.encoder is not None:
-        quantum_agent.encoder = quantum_agent.encoder.to(device)
-        quantum_agent.encoder_target = quantum_agent.encoder_target.to(device)
-    
-    # DEBUG: Check actor output dimension (after moving to device)
-    test_state = torch.randn(1, args.state_dim).to(device)
-    with torch.no_grad():
-        # Use encoder if available
-        if quantum_agent.encoder is not None:
-            # For LSTM/Transformer, we need a sequence
-            test_state_seq = test_state.unsqueeze(0)  # [1, seq_len=1, state_dim]
-            test_encoded = quantum_agent.encoder(test_state_seq)
-            if isinstance(test_encoded, tuple):  # LSTM returns (output, hidden)
-                test_encoded = test_encoded[0]
-            # Get last timestep output
-            test_encoded = test_encoded[:, -1, :] if test_encoded.dim() == 3 else test_encoded
-            test_action = quantum_agent.actor(test_encoded)
-        else:
-            test_action = quantum_agent.actor(test_state)
-    print(f"\n🔍 DEBUG - Quantum Actor Check:")
-    print(f"  Input state shape: {test_state.shape}")
-    if quantum_agent.encoder is not None:
-        print(f"  Encoded state shape: {test_encoded.shape}")
-        print(f"  Expected encoded shape: torch.Size([1, {quantum_agent.encoded_dim}])")
-    print(f"  Output action shape: {test_action.shape}")
-    print(f"  Expected action shape: torch.Size([1, {args.action_dim}])")
-    
-    if test_action.shape[1] != args.action_dim:
-        raise ValueError(
-            f"Actor output dimension mismatch! "
-            f"Expected {args.action_dim}D actions, got {test_action.shape[1]}D. "
-            f"Check agent initialization and config."
-        )
-    
-    quantum_dirs = {
-        'base': comparison_dir / 'quantum',
-        'checkpoints': comparison_dir / 'quantum' / 'checkpoints',
-        'stage1': comparison_dir / 'quantum' / 'stage1_offline',
-        'stage2': comparison_dir / 'quantum' / 'stage2_online',
-    }
-    for d in quantum_dirs.values():
-        d.mkdir(parents=True, exist_ok=True)
-    
-    # Stage 1: Offline Pre-training on VitalDB
-    print("\n" + "-"*70)
-    print("STAGE 1: OFFLINE PRE-TRAINING (VitalDB Dual Drug)")
-    print("-"*70)
-    
-    quantum_agent = stage1_offline_pretraining(
-        agent=quantum_agent,
-        train_data=train_data_dict,
-        val_data=val_data_dict,
-        n_epochs=args.offline_epochs,
-        batch_size=args.batch_size,
-        bc_weight=args.bc_weight,
-        use_cql=args.use_cql,
-        cql_alpha=args.cql_alpha,
-        cql_temp=args.cql_temp,
-        cql_num_random=args.cql_num_random,
-        cql_warmup_epochs=args.cql_warmup_epochs,
-        num_workers=args.num_workers,
-        dirs={'stage1': quantum_dirs['stage1']},
-        device=device
-    )
-    
-    print(f"✓ Stage 1 complete: Quantum agent pre-trained on VitalDB dual drug data")
-    
-    # Stage 2: Online Fine-tuning on Simulator
-    print("\n" + "-"*70)
-    print("STAGE 2: ONLINE FINE-TUNING (Dual Drug Simulator)")
-    print("-"*70)
-    
-    quantum_agent = stage2_online_finetuning(
-        agent=quantum_agent,
-        n_episodes=args.online_episodes,
-        warmup_episodes=args.warmup_episodes,
-        dirs={'stage2': quantum_dirs['stage2']},
-        eval_interval=50,
-        seed=args.seed,
-        device=device
-    )
-    
-    print(f"✓ Stage 2 complete: Quantum agent fine-tuned on simulator")
-    
-    # Save
-    quantum_agent.save(str(quantum_dirs['checkpoints'] / 'final.pt'))
-    print(f"✓ Quantum agent trained and saved")
-    
-    # ========================================
     # Train Classical Agent (2-Stage)
     # ========================================
     print("\n" + "="*70)
@@ -1021,14 +1118,16 @@ def main():
         n_epochs=args.offline_epochs,
         batch_size=args.batch_size,
         bc_weight=args.bc_weight,
-        use_cql=args.use_cql,
+        use_cql=False,
         cql_alpha=args.cql_alpha,
         cql_temp=args.cql_temp,
         cql_num_random=args.cql_num_random,
         cql_warmup_epochs=args.cql_warmup_epochs,
+        bc_warmup_epochs=20,
         num_workers=args.num_workers,
         dirs={'stage1': classical_dirs['stage1']},
-        device=device
+        device=device,
+        dual_drug=True  # Dual drug control
     )
     
     print(f"✓ Stage 1 complete: Classical agent pre-trained on VitalDB dual drug data")
@@ -1043,7 +1142,7 @@ def main():
         n_episodes=args.online_episodes,
         warmup_episodes=args.warmup_episodes,
         dirs={'stage2': classical_dirs['stage2']},
-        eval_interval=50,
+        eval_interval=20,
         seed=args.seed + 1000,
         device=device
     )
@@ -1051,15 +1150,192 @@ def main():
     print(f"✓ Stage 2 complete: Classical agent fine-tuned on simulator")
     
     # ========================================
-    # Evaluation
+    # Evaluate Classical Agent (Interim Results)
     # ========================================
     print("\n" + "="*70)
-    print("EVALUATION")
+    print("CLASSICAL AGENT - INTERIM EVALUATION")
     print("="*70)
     
-    # 1. Evaluate on VitalDB test set
+    # VitalDB test set
     print("\n" + "-"*70)
-    print("EVALUATING ON VITALDB TEST SET")
+    print("EVALUATING CLASSICAL AGENT ON VITALDB TEST SET")
+    print("-"*70)
+    
+    classical_vitaldb_results_interim = evaluate_on_vitaldb_test_set(classical_agent, test_data, device)
+    
+    print(f"\n✓ Classical VitalDB Results:")
+    print(f"  MDAPE: {classical_vitaldb_results_interim['mdape_mean']:.2f}% ± {classical_vitaldb_results_interim['mdape_std']:.2f}%")
+    print(f"  Propofol MDAPE: {classical_vitaldb_results_interim['mdape_propofol']:.2f}%")
+    print(f"  Remifentanil MDAPE: {classical_vitaldb_results_interim['mdape_remifentanil']:.2f}%")
+    
+    # Simulator
+    print("\n" + "-"*70)
+    print("EVALUATING CLASSICAL AGENT ON DUAL DRUG SIMULATOR")
+    print("-"*70)
+    
+    classical_sim_results_interim = evaluate_agent_on_simulator_dualdrug(
+        classical_agent, args.n_test_episodes, args.seed + 2000, device, args.reward_type
+    )
+    
+    print(f"\n✓ Classical Simulator Results:")
+    print(f"  MDAPE: {classical_sim_results_interim['mdape_mean']:.2f}% ± {classical_sim_results_interim['mdape_std']:.2f}%")
+    print(f"  Reward: {classical_sim_results_interim['reward_mean']:.2f} ± {classical_sim_results_interim['reward_std']:.2f}")
+    print(f"  Time in Target (BIS 45-55): {classical_sim_results_interim['time_in_target_mean']:.1f}% ± {classical_sim_results_interim['time_in_target_std']:.1f}%")
+    print(f"  Propofol Usage: {classical_sim_results_interim['propofol_usage_mean']:.2f} ± {classical_sim_results_interim['propofol_usage_std']:.2f} mg/kg/h")
+    print(f"  Remifentanil Usage: {classical_sim_results_interim['remifentanil_usage_mean']:.2f} ± {classical_sim_results_interim['remifentanil_usage_std']:.2f} μg/kg/min")
+    
+    # Generate Classical-specific plots
+    print("\n" + "-"*70)
+    print("GENERATING CLASSICAL AGENT PLOTS")
+    print("-"*70)
+    
+    classical_plot_dir = comparison_dir / 'classical' / 'plots'
+    classical_plot_dir.mkdir(parents=True, exist_ok=True)
+    
+    plot_single_agent_results(
+        results=classical_sim_results_interim,
+        agent_name='Classical',
+        save_dir=classical_plot_dir
+    )
+    
+    # Save Classical-specific CSV
+    print("\n" + "-"*70)
+    print("SAVING CLASSICAL AGENT CSV")
+    print("-"*70)
+    
+    classical_csv_dir = comparison_dir / 'classical' / 'csv_results'
+    classical_csv_dir.mkdir(parents=True, exist_ok=True)
+    
+    save_single_agent_csv(
+        results=classical_sim_results_interim,
+        agent_name='Classical',
+        save_dir=classical_csv_dir
+    )
+    
+    print("\n" + "="*70)
+    print("✓ CLASSICAL AGENT EVALUATION COMPLETE")
+    print("="*70)
+    
+    # ========================================
+    # Train Quantum Agent (2-Stage)
+    # ========================================
+    print("\n" + "="*70)
+    print("TRAINING QUANTUM AGENT (2-STAGE: OFFLINE + ONLINE)")
+    print("="*70)
+    
+    quantum_agent = QuantumDDPGAgent(
+        state_dim=args.state_dim,   # 10D state
+        action_dim=args.action_dim,  # 2D action
+        config=config,
+        encoder_type=args.encoder,
+        seed=args.seed
+    )
+    
+    # Move to device FIRST
+    quantum_agent.actor = quantum_agent.actor.to(device)
+    quantum_agent.actor_target = quantum_agent.actor_target.to(device)
+    quantum_agent.critic = quantum_agent.critic.to(device)
+    quantum_agent.critic_target = quantum_agent.critic_target.to(device)
+    if quantum_agent.encoder is not None:
+        quantum_agent.encoder = quantum_agent.encoder.to(device)
+        quantum_agent.encoder_target = quantum_agent.encoder_target.to(device)
+    
+    # DEBUG: Check actor output dimension (after moving to device)
+    test_state = torch.randn(1, args.state_dim).to(device)
+    with torch.no_grad():
+        # Use encoder if available
+        if quantum_agent.encoder is not None:
+            # For LSTM/Transformer, we need a sequence
+            test_state_seq = test_state.unsqueeze(0)  # [1, seq_len=1, state_dim]
+            test_encoded = quantum_agent.encoder(test_state_seq)
+            if isinstance(test_encoded, tuple):  # LSTM returns (output, hidden)
+                test_encoded = test_encoded[0]
+            # Get last timestep output
+            test_encoded = test_encoded[:, -1, :] if test_encoded.dim() == 3 else test_encoded
+            test_action = quantum_agent.actor(test_encoded)
+        else:
+            test_action = quantum_agent.actor(test_state)
+    print(f"\n🔍 DEBUG - Quantum Actor Check:")
+    print(f"  Input state shape: {test_state.shape}")
+    if quantum_agent.encoder is not None:
+        print(f"  Encoded state shape: {test_encoded.shape}")
+        print(f"  Expected encoded shape: torch.Size([1, {quantum_agent.encoded_dim}])")
+    print(f"  Output action shape: {test_action.shape}")
+    print(f"  Expected action shape: torch.Size([1, {args.action_dim}])")
+    
+    if test_action.shape[1] != args.action_dim:
+        raise ValueError(
+            f"Actor output dimension mismatch! "
+            f"Expected {args.action_dim}D actions, got {test_action.shape[1]}D. "
+            f"Check agent initialization and config."
+        )
+    
+    quantum_dirs = {
+        'base': comparison_dir / 'quantum',
+        'checkpoints': comparison_dir / 'quantum' / 'checkpoints',
+        'stage1': comparison_dir / 'quantum' / 'stage1_offline',
+        'stage2': comparison_dir / 'quantum' / 'stage2_online',
+    }
+    for d in quantum_dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
+    
+    # Stage 1: Offline Pre-training on VitalDB
+    print("\n" + "-"*70)
+    print("STAGE 1: OFFLINE PRE-TRAINING (VitalDB Dual Drug)")
+    print("-"*70)
+    
+    quantum_agent = stage1_offline_pretraining(
+        agent=quantum_agent,
+        train_data=train_data_dict,
+        val_data=val_data_dict,
+        n_epochs=args.offline_epochs,
+        batch_size=args.batch_size,
+        bc_weight=args.bc_weight,
+        use_cql=False,
+        cql_alpha=args.cql_alpha,
+        cql_temp=args.cql_temp,
+        cql_num_random=args.cql_num_random,
+        cql_warmup_epochs=args.cql_warmup_epochs,
+        bc_warmup_epochs=20,
+        num_workers=args.num_workers,
+        dirs={'stage1': quantum_dirs['stage1']},
+        device=device,
+        dual_drug=True  # Dual drug control
+    )
+    
+    print(f"✓ Stage 1 complete: Quantum agent pre-trained on VitalDB dual drug data")
+    
+    # Stage 2: Online Fine-tuning on Simulator
+    print("\n" + "-"*70)
+    print("STAGE 2: ONLINE FINE-TUNING (Dual Drug Simulator)")
+    print("-"*70)
+    
+    quantum_agent = stage2_online_finetuning(
+        agent=quantum_agent,
+        n_episodes=args.online_episodes,
+        warmup_episodes=args.warmup_episodes,
+        dirs={'stage2': quantum_dirs['stage2']},
+        eval_interval=20,
+        seed=args.seed,
+        device=device
+    )
+    
+    print(f"✓ Stage 2 complete: Quantum agent fine-tuned on simulator")
+    
+    # Save
+    quantum_agent.save(str(quantum_dirs['checkpoints'] / 'final.pt'))
+    print(f"✓ Quantum agent trained and saved")
+    
+    # ========================================
+    # Final Evaluation - Quantum Agent Only
+    # ========================================
+    print("\n" + "="*70)
+    print("FINAL EVALUATION - QUANTUM AGENT")
+    print("="*70)
+    
+    # 1. Evaluate Quantum on VitalDB test set
+    print("\n" + "-"*70)
+    print("EVALUATING QUANTUM AGENT ON VITALDB TEST SET")
     print("-"*70)
     
     print(f"\nEvaluating Quantum agent on VitalDB test set...")
@@ -1067,22 +1343,14 @@ def main():
         quantum_agent, test_data, device
     )
     
-    print(f"\nEvaluating Classical agent on VitalDB test set...")
-    classical_vitaldb_results = evaluate_on_vitaldb_test_set(
-        classical_agent, test_data, device
-    )
+    print(f"\n✓ Quantum VitalDB Results:")
+    print(f"  MDAPE: {quantum_vitaldb_results['mdape_mean']:.2f}% ± {quantum_vitaldb_results['mdape_std']:.2f}%")
+    print(f"  Propofol MDAPE: {quantum_vitaldb_results['mdape_propofol']:.2f}%")
+    print(f"  Remifentanil MDAPE: {quantum_vitaldb_results['mdape_remifentanil']:.2f}%")
     
-    print(f"\n✓ VitalDB Test Set Results:")
-    print(f"  Quantum  - MDAPE: {quantum_vitaldb_results['mdape_mean']:.2f}% "
-          f"(PPF: {quantum_vitaldb_results['mdape_propofol']:.2f}%, "
-          f"RFTN: {quantum_vitaldb_results['mdape_remifentanil']:.2f}%)")
-    print(f"  Classical - MDAPE: {classical_vitaldb_results['mdape_mean']:.2f}% "
-          f"(PPF: {classical_vitaldb_results['mdape_propofol']:.2f}%, "
-          f"RFTN: {classical_vitaldb_results['mdape_remifentanil']:.2f}%)")
-    
-    # 2. Evaluate on dual drug simulator
+    # 2. Evaluate Quantum on dual drug simulator
     print("\n" + "-"*70)
-    print("EVALUATING ON DUAL DRUG SIMULATOR")
+    print("EVALUATING QUANTUM AGENT ON DUAL DRUG SIMULATOR")
     print("-"*70)
     
     print(f"\nEvaluating Quantum agent on simulator...")
@@ -1090,16 +1358,65 @@ def main():
         quantum_agent, args.n_test_episodes, args.seed + 2000, device, args.reward_type
     )
     
-    print(f"\nEvaluating Classical agent on simulator...")
-    classical_sim_results = evaluate_agent_on_simulator_dualdrug(
-        classical_agent, args.n_test_episodes, args.seed + 3000, device, args.reward_type
+    print(f"\n✓ Quantum Simulator Results:")
+    print(f"  MDAPE: {quantum_sim_results['mdape_mean']:.2f}% ± {quantum_sim_results['mdape_std']:.2f}%")
+    print(f"  Reward: {quantum_sim_results['reward_mean']:.2f} ± {quantum_sim_results['reward_std']:.2f}")
+    print(f"  Time in Target (BIS 45-55): {quantum_sim_results['time_in_target_mean']:.1f}% ± {quantum_sim_results['time_in_target_std']:.1f}%")
+    print(f"  Propofol Usage: {quantum_sim_results['propofol_usage_mean']:.2f} ± {quantum_sim_results['propofol_usage_std']:.2f} mg/kg/h")
+    print(f"  Remifentanil Usage: {quantum_sim_results['remifentanil_usage_mean']:.2f} ± {quantum_sim_results['remifentanil_usage_std']:.2f} μg/kg/min")
+    
+    # Generate Quantum-specific plots
+    print("\n" + "-"*70)
+    print("GENERATING QUANTUM AGENT PLOTS")
+    print("-"*70)
+    
+    quantum_plot_dir = comparison_dir / 'quantum' / 'plots'
+    quantum_plot_dir.mkdir(parents=True, exist_ok=True)
+    
+    plot_single_agent_results(
+        results=quantum_sim_results,
+        agent_name='Quantum',
+        save_dir=quantum_plot_dir
     )
     
+    # Save Quantum-specific CSV
+    print("\n" + "-"*70)
+    print("SAVING QUANTUM AGENT CSV")
+    print("-"*70)
+    
+    quantum_csv_dir = comparison_dir / 'quantum' / 'csv_results'
+    quantum_csv_dir.mkdir(parents=True, exist_ok=True)
+    
+    save_single_agent_csv(
+        results=quantum_sim_results,
+        agent_name='Quantum',
+        save_dir=quantum_csv_dir
+    )
+    
+    # Use interim classical results (already computed)
+    classical_vitaldb_results = classical_vitaldb_results_interim
+    classical_sim_results = classical_sim_results_interim
+    
+    # ========================================
+    # Final Comparison
+    # ========================================
+    print("\n" + "="*70)
+    print("FINAL COMPARISON - CLASSICAL vs QUANTUM")
+    print("="*70)
+    
+    print(f"\n✓ VitalDB Test Set Results:")
+    print(f"  Classical - MDAPE: {classical_vitaldb_results['mdape_mean']:.2f}% "
+          f"(PPF: {classical_vitaldb_results['mdape_propofol']:.2f}%, "
+          f"RFTN: {classical_vitaldb_results['mdape_remifentanil']:.2f}%)")
+    print(f"  Quantum  - MDAPE: {quantum_vitaldb_results['mdape_mean']:.2f}% "
+          f"(PPF: {quantum_vitaldb_results['mdape_propofol']:.2f}%, "
+          f"RFTN: {quantum_vitaldb_results['mdape_remifentanil']:.2f}%)")
+    
     print(f"\n✓ Simulator Results:")
-    print(f"  Quantum  - MDAPE: {quantum_sim_results['mdape_mean']:.2f}%, "
-          f"Reward: {quantum_sim_results['reward_mean']:.2f}")
-    print(f"  Classical - MDAPE: {classical_sim_results['mdape_mean']:.2f}%, "
+    print(f"  Classical - MDAPE: {classical_sim_results['mdape_mean']:.2f}% ± {classical_sim_results['mdape_std']:.2f}%, "
           f"Reward: {classical_sim_results['reward_mean']:.2f}")
+    print(f"  Quantum  - MDAPE: {quantum_sim_results['mdape_mean']:.2f}% ± {quantum_sim_results['mdape_std']:.2f}%, "
+          f"Reward: {quantum_sim_results['reward_mean']:.2f}")
     
     # Statistical comparison (using simulator results)
     print(f"\n" + "-"*70)

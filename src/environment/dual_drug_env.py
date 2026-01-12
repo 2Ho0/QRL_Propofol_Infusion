@@ -290,6 +290,16 @@ class DualDrugEnv(gym.Env):
         self.bis_window = deque(maxlen=180)
         self.bis_window.append(self.bis)
         
+        # Episode history for metrics tracking
+        self.episode_history = {
+            'bis': [],
+            'ce_propofol': [],
+            'ce_remifentanil': [],
+            'action_propofol': [],
+            'action_remifentanil': [],
+            'reward': []
+        }
+        
         # Get initial observation
         obs = self._get_observation()
         info = self._get_info()
@@ -344,6 +354,14 @@ class DualDrugEnv(gym.Env):
         
         # Compute reward
         reward = self._compute_reward(ppf_rate, rftn_rate, prev_bis)
+        
+        # Track episode history for metrics
+        self.episode_history['bis'].append(self.bis)
+        self.episode_history['ce_propofol'].append(self.simulator.state_ppf[3])
+        self.episode_history['ce_remifentanil'].append(self.simulator.state_rftn[3])
+        self.episode_history['action_propofol'].append(ppf_rate)
+        self.episode_history['action_remifentanil'].append(rftn_rate)
+        self.episode_history['reward'].append(reward)
         
         # Update step counter
         self.current_step += 1
@@ -682,6 +700,78 @@ class DualDrugEnv(gym.Env):
             'patient_age': self.patient_obj.age,
             'patient_weight': self.patient_obj.weight,
             'simulator': 'PatientSimulator (ODE-based)'
+        }
+    
+    def get_episode_metrics(self) -> Dict[str, float]:
+        """
+        Calculate performance metrics for the episode.
+        
+        Following CBIM paper metrics - Formulations (50)-(52):
+        - Formulation (50): PE = 100 * (BIS - target) / target
+        - Formulation (51): MDPE = median(PE)
+        - Formulation (52): MDAPE = median(|PE|)
+        - Wobble: Intra-individual variability
+        - Time in Target: Percentage of time BIS in target range
+        
+        Returns:
+            Dictionary of performance metrics
+        """
+        if len(self.episode_history['bis']) == 0:
+            return {}
+        
+        bis_array = np.array(self.episode_history['bis'])
+        
+        # Formulation (50): Performance Error (PE)
+        pe = (bis_array - self.target_bis) / self.target_bis * 100
+        
+        # Formulation (51): MDPE - Median Performance Error
+        mdpe = np.median(pe)
+        
+        # Formulation (52): MDAPE - Median Absolute Performance Error
+        mdape = np.median(np.abs(pe))
+        
+        # Wobble: Median absolute deviation from MDPE
+        wobble = np.median(np.abs(pe - mdpe))
+        
+        # Time in Target Range (BIS 45-55)
+        bis_min = 45.0
+        bis_max = 55.0
+        in_target = np.logical_and(
+            bis_array >= bis_min,
+            bis_array <= bis_max
+        )
+        time_in_target = np.mean(in_target) * 100
+        
+        # Induction Time: Time to reach target range from awake state
+        induction_time = None
+        for i, bis_val in enumerate(bis_array):
+            if bis_min <= bis_val <= bis_max:
+                induction_time = i * self.dt  # Minutes
+                break
+        
+        # Total reward
+        total_reward = sum(self.episode_history['reward'])
+        
+        # Mean drug doses
+        mean_dose_ppf = np.mean(self.episode_history['action_propofol'])
+        mean_dose_rftn = np.mean(self.episode_history['action_remifentanil'])
+        
+        # Performance Error statistics
+        pe_mean = np.mean(pe)
+        pe_std = np.std(pe)
+        
+        return {
+            'mdpe': mdpe,                      # Formulation (51)
+            'mdape': mdape,                    # Formulation (52)
+            'wobble': wobble,                  # Intra-individual variability
+            'time_in_target': time_in_target,  # % time in BIS 45-55
+            'induction_time': induction_time,  # Minutes to reach target
+            'pe_mean': pe_mean,                # Mean performance error
+            'pe_std': pe_std,                  # PE variability
+            'total_reward': total_reward,
+            'mean_dose_ppf': mean_dose_ppf,    # mg/kg/h
+            'mean_dose_rftn': mean_dose_rftn,  # μg/kg/min
+            'final_bis': bis_array[-1] if len(bis_array) > 0 else None
         }
     
     def render(self):

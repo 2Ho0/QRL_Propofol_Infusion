@@ -74,7 +74,7 @@ def parse_args():
     # Stage 1: Offline parameters
     parser.add_argument('--offline_epochs', type=int, default=50,
                         help='Number of epochs for offline pre-training')
-    parser.add_argument('--batch_size', type=int, default=64,
+    parser.add_argument('--batch_size', type=int, default=256,
                         help='Batch size for offline training')
     parser.add_argument('--bc_weight', type=float, default=0.8,
                         help='Weight for behavioral cloning loss (0-1)')
@@ -92,12 +92,20 @@ def parse_args():
     parser.add_argument('--encoder', type=str, default='none',
                         choices=['none', 'lstm', 'transformer'],
                         help='Temporal encoder type')
+    parser.add_argument('--dual_drug', action='store_true',
+                        help='Use dual drug control (propofol + remifentanil)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
     parser.add_argument('--log_dir', type=str, default='logs',
                         help='Directory for logs and checkpoints')
     parser.add_argument('--eval_interval', type=int, default=50,
                         help='Evaluate every N episodes/epochs')
+    
+    # Reward function
+    parser.add_argument('--reward_type', type=str, default='potential',
+                       choices=['simple', 'paper', 'hybrid', 'potential'],
+                       help='Reward function type: simple (original), paper (equation 1-3), hybrid (dense+sparse), potential (potential-based shaping)')
+    
     
     return parser.parse_args()
 
@@ -124,7 +132,8 @@ def setup_directories(log_dir: str) -> Dict[str, Path]:
 
 def split_vitaldb_data(
     n_total_cases: int = 100,
-    data_path: str = None
+    data_path: str = None,
+    dual_drug: bool = False
 ) -> Tuple[Dict, Dict, Dict]:
     """
     Split VitalDB data into train/val/test sets (80/10/10).
@@ -132,6 +141,7 @@ def split_vitaldb_data(
     Args:
         n_total_cases: Total number of cases to load
         data_path: Path to pre-saved data (optional)
+        dual_drug: If True, load dual drug data (propofol + remifentanil)
     
     Returns:
         train_data, val_data, test_data dictionaries
@@ -152,18 +162,24 @@ def split_vitaldb_data(
         
         print(f"✓ Loaded {len(all_states):,} transitions")
     else:
-        print(f"Loading VitalDB data ({n_total_cases} cases)...")
+        drug_type = "dual drug (propofol + remifentanil)" if dual_drug else "single drug (propofol)"
+        print(f"Loading VitalDB data ({n_total_cases} cases, {drug_type})...")
         loader = VitalDBLoader(bis_range=(30, 70))
         
         # Load data (returns dict with states, actions, rewards, next_states, dones)
-        data = loader.prepare_training_data(n_cases=n_total_cases)
+        if dual_drug:
+            data = loader.prepare_training_data_dualdrug(n_cases=n_total_cases)
+        else:
+            data = loader.prepare_training_data(n_cases=n_total_cases)
         
         all_states = data['states']
         all_actions = data['actions']
         all_rewards = data['rewards']
         all_next_states = data['next_states']
         
-        print(f"✓ Loaded {len(all_states):,} transitions")
+        state_dim = all_states.shape[1] if len(all_states.shape) > 1 else 1
+        action_dim = all_actions.shape[1] if len(all_actions.shape) > 1 else 1
+        print(f"✓ Loaded {len(all_states):,} transitions (state_dim={state_dim}, action_dim={action_dim})")
     
     # Split by percentages (preserving temporal structure within cases)
     n_total = len(all_states)
@@ -215,11 +231,12 @@ def stage1_offline_pretraining(
     bc_weight: float,
     dirs: Dict[str, Path],
     eval_interval: int = 10,
-    use_cql: bool = True,
+    use_cql: bool = False,
     cql_alpha: float = 1.0,
     cql_temp: float = 1.0,
     cql_num_random: int = 5,
     cql_warmup_epochs: int = 50,
+    bc_warmup_epochs: int = 20,
     device: torch.device = None,
     num_workers: int = 4,
     use_amp: bool = False,
@@ -278,6 +295,9 @@ def stage1_offline_pretraining(
     
     # Training metrics
     best_val_loss = float('inf')
+    best_val_mdape = float('inf')
+    patience_counter = 0
+    patience_limit = 25  # More patience for BC convergence
     train_history = {'train_loss': [], 'val_loss': [], 'bc_loss': [], 'rl_loss': []}
     
     print(f"\nTraining configuration:")
@@ -309,6 +329,14 @@ def stage1_offline_pretraining(
         
         # CQL warmup: 초반에만 CQL 사용
         use_cql_this_epoch = use_cql and epoch < cql_warmup_epochs
+        
+        # BC warmup: Start with pure BC, gradually introduce RL
+        # First bc_warmup_epochs: Pure BC (weight=1.0) for stable initialization
+        # After warmup: Use specified bc_weight for hybrid training
+        if epoch < bc_warmup_epochs:
+            current_bc_weight = 1.0  # Pure BC during warmup
+        else:
+            current_bc_weight = bc_weight  # Hybrid BC+RL after warmup
         
         # Training loop
         for batch in train_loader:
@@ -348,21 +376,28 @@ def stage1_offline_pretraining(
                     bc_loss = torch.nn.functional.mse_loss(predicted_actions, actions)
                     
                     # ========== Off-policy RL Loss ==========
-                    with torch.no_grad():
+                    # Only compute critic loss if BC weight < 1.0 (pure BC doesn't need critic)
+                    if current_bc_weight < 1.0:
+                        with torch.no_grad():
+                            if agent.encoder is not None:
+                                q1_next, q2_next = agent.critic_target(encoded_next, next_actions)
+                            else:
+                                q1_next, q2_next = agent.critic_target(next_states, next_actions)
+                            target_q = rewards.unsqueeze(1) + agent.gamma * torch.min(q1_next, q2_next) * (1 - dones.unsqueeze(1))
+                        
                         if agent.encoder is not None:
-                            q1_next, q2_next = agent.critic_target(encoded_next, next_actions)
+                            q1, q2 = agent.critic(encoded_states, actions)
                         else:
-                            q1_next, q2_next = agent.critic_target(next_states, next_actions)
-                        target_q = rewards.unsqueeze(1) + agent.gamma * torch.min(q1_next, q2_next) * (1 - dones.unsqueeze(1))
-                    
-                    if agent.encoder is not None:
-                        q1, q2 = agent.critic(encoded_states, actions)
+                            q1, q2 = agent.critic(states, actions)
+                        critic_loss = (
+                            torch.nn.functional.mse_loss(q1, target_q) +
+                            torch.nn.functional.mse_loss(q2, target_q)
+                        ) / 2
                     else:
-                        q1, q2 = agent.critic(states, actions)
-                    critic_loss = (
-                        torch.nn.functional.mse_loss(q1, target_q) +
-                        torch.nn.functional.mse_loss(q2, target_q)
-                    ) / 2
+                        # Pure BC: no critic loss
+                        critic_loss = torch.tensor(0.0, device=device)
+                        q1 = torch.tensor(0.0, device=device)
+                        q2 = torch.tensor(0.0, device=device)
                     
                     # ========== CQL Penalty (if enabled and in warmup period) ==========
                     if use_cql_this_epoch:
@@ -396,11 +431,13 @@ def stage1_offline_pretraining(
                         critic_loss = critic_loss + cql_alpha * cql_penalty
                 
                 # Backward with gradient scaling
-                agent.critic_optimizer.zero_grad()
-                scaler.scale(critic_loss).backward()
-                scaler.unscale_(agent.critic_optimizer)
-                torch.nn.utils.clip_grad_norm_(agent.critic.parameters(), 1.0)
-                scaler.step(agent.critic_optimizer)
+                # Only update critic if BC weight < 1.0
+                if current_bc_weight < 1.0:
+                    agent.critic_optimizer.zero_grad()
+                    scaler.scale(critic_loss).backward()
+                    scaler.unscale_(agent.critic_optimizer)
+                    torch.nn.utils.clip_grad_norm_(agent.critic.parameters(), 1.0)
+                    scaler.step(agent.critic_optimizer)
                 
                 # Update Actor with AMP
                 agent.actor_optimizer.zero_grad()
@@ -413,16 +450,24 @@ def stage1_offline_pretraining(
                             encoded_states_actor = encoded_states_actor[0]
                         encoded_states_actor = encoded_states_actor[:, -1, :] if encoded_states_actor.dim() == 3 else encoded_states_actor
                         pred_actions_for_bc = agent.actor(encoded_states_actor)
-                        pred_actions_for_q = agent.actor(encoded_states_actor)
-                        q1_pred, _ = agent.critic(encoded_states_actor, pred_actions_for_q)
                     else:
                         pred_actions_for_bc = agent.actor(states)
-                        pred_actions_for_q = agent.actor(states)
-                        q1_pred, _ = agent.critic(states, pred_actions_for_q)
                     
-                    bc_loss_final = torch.nn.functional.mse_loss(pred_actions_for_bc, actions)
-                    actor_rl_loss = -q1_pred.mean()
-                    combined_actor_loss = bc_weight * bc_loss_final + (1 - bc_weight) * actor_rl_loss
+                    # Pure BC: only BC loss
+                    if current_bc_weight >= 1.0:
+                        bc_loss_final = torch.nn.functional.mse_loss(pred_actions_for_bc, actions)
+                        combined_actor_loss = bc_loss_final
+                    else:
+                        # Hybrid BC + RL
+                        pred_actions_for_q = agent.actor(encoded_states_actor if agent.encoder is not None else states)
+                        q1_pred, _ = agent.critic(encoded_states_actor if agent.encoder is not None else states, pred_actions_for_q)
+                        bc_loss_final = torch.nn.functional.mse_loss(pred_actions_for_bc, actions)
+                        actor_rl_loss = -q1_pred.mean()
+                        
+                        # Scale RL loss to match BC loss magnitude
+                        # BC loss ~ 0.0001, RL loss ~ -1.0, so scale RL by 0.0001 to balance
+                        rl_scale = 0.0001
+                        combined_actor_loss = current_bc_weight * bc_loss_final + (1 - current_bc_weight) * rl_scale * actor_rl_loss
                 
                 scaler.scale(combined_actor_loss).backward()
                 scaler.unscale_(agent.actor_optimizer)
@@ -460,26 +505,33 @@ def stage1_offline_pretraining(
                 bc_loss = torch.nn.functional.mse_loss(predicted_actions, actions)
                 
                 # ========== Off-policy RL Loss ==========
-                with torch.no_grad():
-                    # next_actions already computed above (with or without encoder)
+                # Only compute critic loss if BC weight < 1.0
+                if current_bc_weight < 1.0:
+                    with torch.no_grad():
+                        # next_actions already computed above (with or without encoder)
+                        if agent.encoder is not None:
+                            q1_next, q2_next = agent.critic_target(encoded_next, next_actions)
+                        else:
+                            q1_next, q2_next = agent.critic_target(next_states, next_actions)
+                        q1_next = q1_next.float()
+                        q2_next = q2_next.float()
+                        target_q = (rewards.unsqueeze(1) + agent.gamma * torch.min(q1_next, q2_next) * (1 - dones.unsqueeze(1))).float()
+                    
                     if agent.encoder is not None:
-                        q1_next, q2_next = agent.critic_target(encoded_next, next_actions)
+                        q1, q2 = agent.critic(encoded_states, actions)
                     else:
-                        q1_next, q2_next = agent.critic_target(next_states, next_actions)
-                    q1_next = q1_next.float()
-                    q2_next = q2_next.float()
-                    target_q = (rewards.unsqueeze(1) + agent.gamma * torch.min(q1_next, q2_next) * (1 - dones.unsqueeze(1))).float()
-                
-                if agent.encoder is not None:
-                    q1, q2 = agent.critic(encoded_states, actions)
+                        q1, q2 = agent.critic(states, actions)
+                    q1 = q1.float()
+                    q2 = q2.float()
+                    critic_loss = (
+                        torch.nn.functional.mse_loss(q1, target_q) +
+                        torch.nn.functional.mse_loss(q2, target_q)
+                    ) / 2
                 else:
-                    q1, q2 = agent.critic(states, actions)
-                q1 = q1.float()
-                q2 = q2.float()
-                critic_loss = (
-                    torch.nn.functional.mse_loss(q1, target_q) +
-                    torch.nn.functional.mse_loss(q2, target_q)
-                ) / 2
+                    # Pure BC: no critic loss
+                    critic_loss = torch.tensor(0.0, device=device)
+                    q1 = torch.tensor(0.0, device=device)
+                    q2 = torch.tensor(0.0, device=device)
                 
                 # ========== CQL Penalty (if enabled and in warmup period) ==========
                 if use_cql_this_epoch:
@@ -514,65 +566,93 @@ def stage1_offline_pretraining(
                     critic_loss = critic_loss + cql_alpha * cql_penalty
             
                 # ========== Combined Update ==========
-                # Update Critic first
-                agent.critic_optimizer.zero_grad()
-                critic_loss.backward()
-                torch.nn.utils.clip_grad_norm_(agent.critic.parameters(), 1.0)
-                agent.critic_optimizer.step()
+                # Update Critic first (only if BC weight < 1.0)
+                if current_bc_weight < 1.0:
+                    agent.critic_optimizer.zero_grad()
+                    critic_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(agent.critic.parameters(), 1.0)
+                    agent.critic_optimizer.step()
                 
-                # Update Actor (BC + policy gradient, computed separately)
+                # Update Actor (BC only or BC + policy gradient)
                 agent.actor_optimizer.zero_grad()
                 
-                # Recompute actor loss after critic update
-                if agent.encoder is not None:
-                    states_seq = states.unsqueeze(1)
-                    encoded_states = agent.encoder(states_seq)
-                    if isinstance(encoded_states, tuple):
-                        encoded_states = encoded_states[0]
-                    # Handle both 2D and 3D encoder outputs
-                    if encoded_states.dim() == 3:
-                        encoded_states = encoded_states[:, -1, :]
-                    pred_actions_for_bc = agent.actor(encoded_states).float()
+                # Pure BC: only BC loss
+                if current_bc_weight >= 1.0:
+                    if agent.encoder is not None:
+                        states_seq = states.unsqueeze(1)
+                        encoded_states_actor = agent.encoder(states_seq)
+                        if isinstance(encoded_states_actor, tuple):
+                            encoded_states_actor = encoded_states_actor[0]
+                        if encoded_states_actor.dim() == 3:
+                            encoded_states_actor = encoded_states_actor[:, -1, :]
+                        pred_actions = agent.actor(encoded_states_actor)
+                    else:
+                        pred_actions = agent.actor(states)
+                    
+                    actor_loss = torch.nn.functional.mse_loss(pred_actions, actions)
                 else:
-                    pred_actions_for_bc = agent.actor(states).float()
-                bc_loss_final = torch.nn.functional.mse_loss(pred_actions_for_bc, actions)
+                    # Hybrid BC + RL: recompute actor loss after critic update
+                    if agent.encoder is not None:
+                        states_seq = states.unsqueeze(1)
+                        encoded_states = agent.encoder(states_seq)
+                        if isinstance(encoded_states, tuple):
+                            encoded_states = encoded_states[0]
+                        # Handle both 2D and 3D encoder outputs
+                        if encoded_states.dim() == 3:
+                            encoded_states = encoded_states[:, -1, :]
+                        pred_actions_for_bc = agent.actor(encoded_states).float()
+                        pred_actions_for_q = agent.actor(encoded_states).float()
+                        q1_pred, _ = agent.critic(encoded_states, pred_actions_for_q)
+                    else:
+                        pred_actions_for_bc = agent.actor(states).float()
+                        pred_actions_for_q = agent.actor(states).float()
+                        q1_pred, _ = agent.critic(states, pred_actions_for_q)
+                    
+                    bc_loss_final = torch.nn.functional.mse_loss(pred_actions_for_bc, actions)
+                    q1_pred = q1_pred.float()
+                    actor_rl_loss = -q1_pred.mean()
+                    
+                    # Scale RL loss to match BC loss magnitude
+                    # BC loss ~ 0.0001, RL loss ~ -1.0, so scale RL by 0.0001 to balance
+                    rl_scale = 0.0001
+                    
+                    # Combined loss - ensure float32
+                    bc_weight_tensor = torch.tensor(current_bc_weight, dtype=torch.float32, device=device)
+                    actor_loss = (bc_weight_tensor * bc_loss_final + (1 - bc_weight_tensor) * rl_scale * actor_rl_loss).float()
                 
-                if agent.encoder is not None:
-                    states_seq = states.unsqueeze(1)
-                    encoded_states = agent.encoder(states_seq)
-                    if isinstance(encoded_states, tuple):
-                        encoded_states = encoded_states[0]
-                    # Handle both 2D and 3D encoder outputs
-                    if encoded_states.dim() == 3:
-                        encoded_states = encoded_states[:, -1, :]
-                    pred_actions_for_q = agent.actor(encoded_states).float()
-                    q1_pred, _ = agent.critic(encoded_states, pred_actions_for_q)
-                else:
-                    pred_actions_for_q = agent.actor(states).float()
-                    q1_pred, _ = agent.critic(states, pred_actions_for_q)
-                q1_pred = q1_pred.float()
-                actor_rl_loss = -q1_pred.mean()
-                
-                # Combined loss - ensure float32
-                bc_weight_tensor = torch.tensor(bc_weight, dtype=torch.float32, device=device)
-                combined_actor_loss = (bc_weight_tensor * bc_loss_final + (1 - bc_weight_tensor) * actor_rl_loss).float()
-                
-                combined_actor_loss.backward()
+                actor_loss.backward()
                 torch.nn.utils.clip_grad_norm_(agent.actor.parameters(), 1.0)
                 agent.actor_optimizer.step()
             
             # Soft update target networks (공통)
             soft_update(agent.actor_target, agent.actor, agent.tau)
-            soft_update(agent.critic_target, agent.critic, agent.tau)
+            if current_bc_weight < 1.0:
+                soft_update(agent.critic_target, agent.critic, agent.tau)
             
+            # Track metrics
             epoch_train_bc.append(bc_loss.item())
-            epoch_train_rl.append(actor_rl_loss.item())
-            epoch_train_total.append(combined_actor_loss.item() + critic_loss.item())
-            epoch_train_rl.append(actor_rl_loss.item() if not scaler else actor_rl_loss.item())
-            epoch_train_total.append(combined_actor_loss.item() + critic_loss.item())
+            
+            # Only track RL losses if BC weight < 1.0
+            if current_bc_weight < 1.0:
+                # Scale RL loss for display to show actual contribution to total loss
+                rl_scale = 0.0001
+                if scaler is not None:
+                    epoch_train_rl.append(actor_rl_loss.item() * rl_scale)
+                    epoch_train_total.append(combined_actor_loss.item() + critic_loss.item())
+                else:
+                    epoch_train_rl.append(actor_rl_loss.item() * rl_scale)
+                    epoch_train_total.append(actor_loss.item() + critic_loss.item())
+            else:
+                # Pure BC: RL loss is 0
+                epoch_train_rl.append(0.0)
+                if scaler is not None:
+                    epoch_train_total.append(combined_actor_loss.item())
+                else:
+                    epoch_train_total.append(actor_loss.item())
         
         # Validation loop
         epoch_val_loss = []
+        epoch_val_mdape = []
         with torch.no_grad():
             for batch in val_loader:
                 states, actions, _, _, _ = batch
@@ -590,8 +670,17 @@ def stage1_offline_pretraining(
                     predicted_actions = agent.actor(encoded_states)
                 else:
                     predicted_actions = agent.actor(states)
+                
+                # MSE Loss
                 val_loss = torch.nn.functional.mse_loss(predicted_actions, actions)
                 epoch_val_loss.append(val_loss.item())
+                
+                # MDAPE (Median Absolute Percentage Error)
+                pred_np = predicted_actions.detach().cpu().numpy()
+                act_np = actions.detach().cpu().numpy()
+                ape = np.abs(pred_np - act_np) / (np.abs(act_np) + 1e-8) * 100
+                mdape = np.median(ape)
+                epoch_val_mdape.append(mdape)
         
         # Track epoch time
         epoch_time = time.time() - epoch_start
@@ -606,15 +695,19 @@ def stage1_offline_pretraining(
         avg_train_rl = np.mean(epoch_train_rl)
         avg_train_total = np.mean(epoch_train_total)
         avg_val_loss = np.mean(epoch_val_loss)
+        avg_val_mdape = np.mean(epoch_val_mdape)
         
         train_history['train_loss'].append(avg_train_total)
         train_history['val_loss'].append(avg_val_loss)
         train_history['bc_loss'].append(avg_train_bc)
         train_history['rl_loss'].append(avg_train_rl)
+        train_history['val_mdape'] = train_history.get('val_mdape', [])
+        train_history['val_mdape'].append(avg_val_mdape)
         
         # 매 epoch마다 간단한 로그 (한 줄)
         cql_status = "CQL" if use_cql_this_epoch else "STD"
-        print(f"Epoch {epoch+1:3d}/{n_epochs} [{cql_status}] | Train: {avg_train_total:7.4f} | Val: {avg_val_loss:7.4f} | BC: {avg_train_bc:7.4f} | RL: {avg_train_rl:7.4f} | Time: {epoch_time:5.1f}s | ETA: {eta_minutes:5.1f}m")
+        bc_status = f"BC={current_bc_weight:.1f}"  # Show current BC weight
+        print(f"Epoch {epoch+1:3d}/{n_epochs} [{cql_status}|{bc_status}] | Train: {avg_train_total:7.4f} | Val: {avg_val_loss:7.4f} | MDAPE: {avg_val_mdape:6.2f}% | BC: {avg_train_bc:7.4f} | RL: {avg_train_rl:7.4f} | Time: {epoch_time:5.1f}s | ETA: {eta_minutes:5.1f}m")
         
         # Periodic detailed logging
         if epoch % eval_interval == 0 or epoch == n_epochs - 1:
@@ -625,18 +718,32 @@ def stage1_offline_pretraining(
             print(f"    - BC Loss (Behavioral Cloning): {avg_train_bc:.4f}")
             print(f"    - RL Loss (Policy Gradient):    {avg_train_rl:.4f}")
             print(f"    - Total Train Loss:             {avg_train_total:.4f}")
-            print(f"  Validation Loss:                  {avg_val_loss:.4f}")
+            print(f"  Validation Metrics:")
+            print(f"    - Val Loss (MSE):               {avg_val_loss:.4f}")
+            print(f"    - Val MDAPE:                    {avg_val_mdape:.2f}%")
             print(f"  Train-Val Gap:                    {avg_train_total - avg_val_loss:+.4f}")
             print(f"  Time: {epoch_time:.1f}s (avg: {avg_epoch_time:.1f}s) | ETA: {eta_minutes:.1f}min")
             print(f"  {'='*60}")
         
-        # Save best model
-        if avg_val_loss < best_val_loss:
+        # Save best model based on validation MDAPE (primary metric)
+        if avg_val_mdape < best_val_mdape:
+            best_val_mdape = avg_val_mdape
             best_val_loss = avg_val_loss
+            patience_counter = 0  # Reset patience
             best_path = dirs['stage1'] / 'best_val.pt'
             agent.save(str(best_path))
             if epoch % eval_interval == 0:
-                print(f"    → New best model saved (val loss: {best_val_loss:.4f})")
+                print(f"    → New best model saved (MDAPE: {best_val_mdape:.2f}%, val loss: {best_val_loss:.4f})")
+        else:
+            patience_counter += 1
+            
+        # Early stopping check
+        if patience_counter >= patience_limit:
+            print(f"\n⚠️  Early stopping triggered!")
+            print(f"    No improvement in validation MDAPE for {patience_limit} epochs")
+            print(f"    Best val MDAPE: {best_val_mdape:.2f}%")
+            print(f"    Stopping at epoch {epoch+1}/{n_epochs}")
+            break
         
         # Save periodic checkpoints
         if (epoch + 1) % 20 == 0:
@@ -652,19 +759,28 @@ def stage1_offline_pretraining(
         pickle.dump(train_history, f)
     
     # Save training history to CSV
+    # Use actual number of completed epochs (in case of early stopping)
+    actual_epochs = len(train_history['train_loss'])
     loss_df = pd.DataFrame({
-        'epoch': range(1, n_epochs + 1),
+        'epoch': range(1, actual_epochs + 1),
         'train_loss': train_history['train_loss'],
         'val_loss': train_history['val_loss'],
         'bc_loss': train_history['bc_loss'],
-        'rl_loss': train_history['rl_loss']
+        'rl_loss': train_history['rl_loss'],
+        'val_mdape': train_history.get('val_mdape', [0] * actual_epochs)
     })
     loss_csv_path = dirs['stage1'] / 'loss_history.csv'
     loss_df.to_csv(loss_csv_path, index=False)
     print(f"✓ Loss history saved to CSV: {loss_csv_path}")
     
     print(f"\n✓ Stage 1 Complete: Offline Pre-training")
+    print(f"  Completed epochs: {actual_epochs}/{n_epochs}")
     print(f"  Best validation loss: {best_val_loss:.4f}")
+    print(f"  Best validation MDAPE: {best_val_mdape:.2f}%")
+    if actual_epochs < n_epochs:
+        print(f"  Early stopping triggered at epoch {actual_epochs}")
+    if train_history.get('val_mdape'):
+        print(f"  Final validation MDAPE: {train_history['val_mdape'][-1]:.2f}%")
     print(f"  Saved models:")
     print(f"    - Best: {dirs['stage1'] / 'best_val.pt'}")
     print(f"    - Final: {final_path}")
@@ -724,6 +840,32 @@ def stage2_online_finetuning(
     # Create environment
     env = env_class(seed=seed)
     
+    # Check if state padding is needed (e.g., for remifentanil history)
+    env_state_dim = env.observation_space.shape[0]
+    agent_state_dim = agent.state_dim
+    needs_padding = agent_state_dim > env_state_dim
+    
+    if needs_padding:
+        padding_dim = agent_state_dim - env_state_dim
+        print(f"\n⚠️  State dimension mismatch detected:")
+        print(f"  Environment: {env_state_dim}D")
+        print(f"  Agent: {agent_state_dim}D")
+        print(f"  Padding with {padding_dim} zeros (remifentanil features)")
+        
+        # Use FIXED remifentanil values for padding (not random!)
+        # Random noise causes agent confusion - use consistent values from offline training
+        remi_ce_fixed = 0.1  # Median from VitalDB training data
+        remi_rate_fixed = 0.2  # Median from VitalDB training data
+    
+    def pad_state(state: np.ndarray) -> np.ndarray:
+        """Pad state with remifentanil features if needed."""
+        if needs_padding:
+            # Use FIXED padding (not random!) to match offline training distribution
+            # This maintains consistency with what the agent learned offline
+            padding = np.array([remi_ce_fixed, remi_rate_fixed])
+            return np.concatenate([state, padding[:padding_dim]])
+        return state
+    
     # Create evaluation patients
     eval_patients = create_patient_population(5, seed=seed + 1000)
     
@@ -749,6 +891,7 @@ def stage2_online_finetuning(
     
     for episode in tqdm(range(n_episodes), desc="Online Fine-tuning"):
         state, _ = env.reset()
+        state = pad_state(state)  # Pad if needed
         agent.reset_noise()
         
         episode_reward = 0.0
@@ -766,6 +909,7 @@ def stage2_online_finetuning(
             # Step environment (Simulator)
             action_normalized = np.clip(action / agent.action_scale, 0, 1)
             next_state, reward, terminated, truncated, _ = env.step(action_normalized)
+            next_state = pad_state(next_state)  # Pad if needed
             done = terminated or truncated
             
             # Online RL update
@@ -812,6 +956,7 @@ def stage2_online_finetuning(
             eval_mdapes = []
             for patient in eval_patients:
                 state, _ = env.reset(options={'patient': patient})
+                state = pad_state(state)  # Pad if needed
                 episode_reward = 0
                 done = False
                 
@@ -819,6 +964,7 @@ def stage2_online_finetuning(
                     action = agent.select_action(state, deterministic=True)
                     action_normalized = np.clip(action / agent.action_scale, 0, 1)
                     next_state, reward, terminated, truncated, _ = env.step(action_normalized)
+                    next_state = pad_state(next_state)  # Pad if needed
                     done = terminated or truncated
                     episode_reward += reward
                     state = next_state
@@ -933,32 +1079,46 @@ def stage3_testing(
     test_states = vitaldb_test_data['states']
     
     def evaluate_on_vitaldb(agent, name):
-        bis_errors = []
+        predicted_actions = []
+        ground_truth_actions = []
+        
+        # Evaluate action prediction accuracy
         for i in range(0, min(1000, len(test_states)), 5):  # Sample every 5th
             state = test_states[i]
-            _ = agent.select_action(state, deterministic=True)
-            bis_error = abs(state[0])
-            bis_errors.append(bis_error)
+            action = vitaldb_test_data['actions'][i]
+            
+            # Get predicted action from agent
+            pred_action = agent.select_action(state, deterministic=True)
+            
+            predicted_actions.append(pred_action[0] if len(pred_action) > 0 else pred_action)
+            ground_truth_actions.append(action[0] if len(action) > 0 else action)
         
-        mean_error = np.mean(bis_errors)
-        std_error = np.std(bis_errors)
+        predicted_actions = np.array(predicted_actions)
+        ground_truth_actions = np.array(ground_truth_actions)
+        
+        # Calculate MDAPE (Median Absolute Percentage Error)
+        ape = np.abs(predicted_actions - ground_truth_actions) / (np.abs(ground_truth_actions) + 1e-8) * 100
+        mdape = np.median(ape)
+        mae = np.mean(np.abs(predicted_actions - ground_truth_actions))
         
         print(f"  {name}:")
-        print(f"    Mean BIS error: {mean_error:.2f} ± {std_error:.2f}")
-        print(f"    MDAPE: {mean_error:.2f}%")
+        print(f"    Action MDAPE: {mdape:.2f}%")
+        print(f"    Action MAE: {mae:.4f}")
+        print(f"    Pred range: [{predicted_actions.min():.4f}, {predicted_actions.max():.4f}]")
+        print(f"    True range: [{ground_truth_actions.min():.4f}, {ground_truth_actions.max():.4f}]")
         
-        return mean_error
+        return mdape
     
     pretrained_error = evaluate_on_vitaldb(agent_pretrained, "Pre-trained (Offline only)")
     finetuned_error = evaluate_on_vitaldb(agent_finetuned, "Fine-tuned (Offline + Online)")
     
     results['vitaldb'] = {
-        'pretrained_error': pretrained_error,
-        'finetuned_error': finetuned_error,
+        'pretrained_mdape': pretrained_error,
+        'finetuned_mdape': finetuned_error,
         'improvement': pretrained_error - finetuned_error
     }
     
-    print(f"\n  Improvement: {results['vitaldb']['improvement']:.2f} (lower error is better)")
+    print(f"\n  MDAPE Improvement: {results['vitaldb']['improvement']:.2f}% (lower is better)")
     
     # ========================================
     # Test 2: Simulator Test Set (Synthetic)
@@ -1092,8 +1252,17 @@ def main():
     # ========================================
     train_data, val_data, test_data = split_vitaldb_data(
         n_total_cases=args.n_cases,
-        data_path=args.data_path
+        data_path=args.data_path,
+        dual_drug=args.dual_drug
     )
+    
+    # Determine state and action dimensions from data
+    state_dim = train_data['states'].shape[1] if len(train_data['states'].shape) > 1 else 1
+    action_dim = train_data['actions'].shape[1] if len(train_data['actions'].shape) > 1 else 1
+    
+    print(f"\n✓ Data dimensions:")
+    print(f"  State dim: {state_dim} ({'dual drug' if args.dual_drug else 'single drug'})")
+    print(f"  Action dim: {action_dim}")
     
     # ========================================
     # Stage 1: Offline Pre-training
@@ -1105,8 +1274,8 @@ def main():
         
         print(f"\nSkipping offline training, loading from: {args.resume}")
         agent = QuantumDDPGAgent(
-            state_dim=8,
-            action_dim=1,
+            state_dim=state_dim,
+            action_dim=action_dim,
             config=config,
             encoder_type=args.encoder,
             seed=args.seed
@@ -1115,8 +1284,8 @@ def main():
     else:
         # Create agent
         agent = QuantumDDPGAgent(
-            state_dim=8,
-            action_dim=1,
+            state_dim=state_dim,
+            action_dim=action_dim,
             config=config,
             encoder_type=args.encoder,
             seed=args.seed
@@ -1167,8 +1336,8 @@ def main():
     
     # Save pre-trained agent for comparison
     agent_pretrained = QuantumDDPGAgent(
-        state_dim=8,
-        action_dim=1,
+        state_dim=state_dim,
+        action_dim=action_dim,
         config=config,
         encoder_type=args.encoder,
         seed=args.seed
@@ -1197,8 +1366,8 @@ def main():
         
         # Load best fine-tuned model for testing
         best_finetuned = QuantumDDPGAgent(
-            state_dim=8,
-            action_dim=1,
+            state_dim=state_dim,
+            action_dim=action_dim,
             config=config,
             encoder_type=args.encoder,
             seed=args.seed

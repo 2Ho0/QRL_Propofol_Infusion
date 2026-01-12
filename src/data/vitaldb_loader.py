@@ -80,7 +80,7 @@ class VitalDBLoader:
         
         # Check first N cases
         # Dual drug needs more data, so scan more cases
-        max_check = 200  # Can be adjusted via parameter
+        max_check = 6000  # Can be adjusted via parameter
         check_cases = ppf_cases[:min(max_check, len(ppf_cases))]
         
         print(f"  Scanning first {len(check_cases)} cases (out of {len(ppf_cases)} total)...")
@@ -162,15 +162,16 @@ class VitalDBLoader:
                 return None
             
             # Combine RFTN20 and RFTN50 into single RFTN columns (prefer RFTN20, fallback to RFTN50)
+            # Store which concentration was used for later unit conversion
+            rftn_concentration = 20.0  # Default
             if 'RFTN20_RATE' in df_dict and 'RFTN50_RATE' in df_dict:
                 rftn20_rate = df_dict['RFTN20_RATE']
                 rftn50_rate = df_dict['RFTN50_RATE']
-                # Use RFTN20 where available, otherwise use RFTN50 (scaled)
-                df_dict['RFTN_RATE'] = np.where(
-                    pd.notna(rftn20_rate) & (rftn20_rate > 0),
-                    rftn20_rate,
-                    rftn50_rate * (50.0 / 20.0) if pd.notna(rftn50_rate).any() else rftn20_rate
-                )
+                # Use RFTN20 where available, otherwise use RFTN50 (keep as-is for now)
+                use_rftn20 = pd.notna(rftn20_rate) & (rftn20_rate > 0)
+                df_dict['RFTN_RATE'] = np.where(use_rftn20, rftn20_rate, rftn50_rate)
+                # Track which concentration: 20 or 50 mcg/mL
+                rftn_concentration = np.where(use_rftn20, 20.0, 50.0)
                 
                 rftn20_ce = df_dict.get('RFTN20_CE', np.full(len(rftn20_rate), np.nan))
                 rftn50_ce = df_dict.get('RFTN50_CE', np.full(len(rftn20_rate), np.nan))
@@ -233,9 +234,14 @@ class VitalDBLoader:
             df['PPF20_RATE'] = df['PPF20_RATE'] * 20.0 / patient_weight
             
             # 2. RFTN_RATE: mL/hr (20 or 50 mcg/mL) → μg/kg/min
-            # Already scaled to 20 mcg/mL equivalent in the combination logic above
+            # Convert using appropriate concentration (20 or 50 mcg/mL)
             if 'RFTN_RATE' in df.columns:
-                df['RFTN_RATE'] = df['RFTN_RATE'] * 20.0 / patient_weight / 60.0
+                if isinstance(rftn_concentration, np.ndarray):
+                    # Element-wise conversion with varying concentrations
+                    df['RFTN_RATE'] = df['RFTN_RATE'] * rftn_concentration / patient_weight / 60.0
+                else:
+                    # Fixed concentration
+                    df['RFTN_RATE'] = df['RFTN_RATE'] * rftn_concentration / patient_weight / 60.0
             
             df['time'] = np.arange(len(df)) * interval
             df['caseid'] = caseid
@@ -262,7 +268,8 @@ class VitalDBLoader:
         n_cases: int = 100,
         bis_range: Optional[Tuple[float, float]] = None,
         min_duration: int = 1800,
-        save_path: Optional[str] = None
+        save_path: Optional[str] = None,
+        action_max: float = 200.0  # Maximum action scale for normalization
     ) -> Dict[str, np.ndarray]:
         """
         Prepare training data for model-based QRL.
@@ -272,6 +279,7 @@ class VitalDBLoader:
             bis_range: BIS range filter (default: self.bis_range)
             min_duration: Minimum case duration in seconds
             save_path: Path to save prepared data
+            action_max: Maximum action scale (for normalization to [0, 1])
             
         Returns:
             Dictionary with states, actions, rewards, next_states, dones
@@ -360,7 +368,7 @@ class VitalDBLoader:
         # Convert to numpy arrays
         data = {
             'states': np.array(states_list, dtype=np.float32),
-            'actions': np.array(actions_list, dtype=np.float32).reshape(-1, 1),
+            'actions': np.array(actions_list, dtype=np.float32).reshape(-1, 1) / action_max,  # Normalize to [0, 1]
             'rewards': np.array(rewards_list, dtype=np.float32),
             'next_states': np.array(next_states_list, dtype=np.float32),
             'dones': np.array(dones_list, dtype=np.bool_),
@@ -370,7 +378,8 @@ class VitalDBLoader:
         print(f"  Valid cases: {valid_cases}/{n_cases}")
         print(f"  Total transitions: {len(data['states']):,}")
         print(f"  States shape: {data['states'].shape}")
-        print(f"  Actions range: [{data['actions'].min():.2f}, {data['actions'].max():.2f}]")
+        print(f"  Actions range (normalized): [{data['actions'].min():.4f}, {data['actions'].max():.4f}]")
+        print(f"  Actions range (raw μg/kg/min): [{data['actions'].min() * action_max:.2f}, {data['actions'].max() * action_max:.2f}]")
         print(f"  BIS range: [{50 - data['states'][:, 0].max():.1f}, {50 - data['states'][:, 0].min():.1f}]")
         print(f"  Mean reward: {data['rewards'].mean():.3f}")
         
@@ -383,6 +392,235 @@ class VitalDBLoader:
             print(f"  Saved to: {save_path}")
         
         return data
+    
+    def prepare_training_data_dualdrug(
+        self,
+        n_cases: int = 100,
+        bis_range: Optional[Tuple[float, float]] = None,
+        min_duration: int = 1800,
+        save_path: Optional[str] = None
+    ) -> Dict[str, np.ndarray]:
+        """
+        Prepare training data for dual drug control (Propofol + Remifentanil).
+        
+        Args:
+            n_cases: Number of cases to load
+            bis_range: BIS range filter (default: self.bis_range)
+            min_duration: Minimum case duration in seconds
+            save_path: Path to save prepared data
+            
+        Returns:
+            Dictionary with states, actions, rewards, next_states, dones
+            - states: shape (N, 13) - dual drug state
+            - actions: shape (N, 2) - [propofol_rate, remifentanil_rate]
+        """
+        if bis_range is None:
+            bis_range = self.bis_range
+        
+        print(f"\\nPreparing DUAL DRUG training data...")
+        print(f"  Target cases: {n_cases}")
+        print(f"  BIS range: {bis_range}")
+        print(f"  Min duration: {min_duration}s")
+        
+        # Get available cases
+        case_ids = self.get_available_cases(min_duration=min_duration)
+        
+        if len(case_ids) < n_cases:
+            print(f"  Warning: Only {len(case_ids)} cases available, using all")
+            n_cases = len(case_ids)
+        
+        # Sample cases
+        np.random.seed(42)
+        selected_cases = np.random.choice(case_ids, n_cases, replace=False)
+        
+        states_list = []
+        actions_list = []
+        rewards_list = []
+        next_states_list = []
+        dones_list = []
+        
+        valid_cases = 0
+        
+        for caseid in tqdm(selected_cases, desc="Loading dual drug cases"):
+            df = self.load_case(caseid)
+            
+            if df is None or len(df) < 10:
+                continue
+            
+            # Check if remifentanil data exists
+            if 'RFTN_RATE' not in df.columns or df['RFTN_RATE'].isna().all():
+                continue
+            
+            # Filter by BIS range
+            df_filtered = df[
+                (df['BIS'] >= bis_range[0]) & 
+                (df['BIS'] <= bis_range[1]) &
+                (df['BIS'].notna()) &
+                (df['PPF20_RATE'].notna()) &
+                (df['RFTN_RATE'].notna())
+            ].copy()
+            
+            if len(df_filtered) < 10:
+                continue
+            
+            # Extract transitions
+            for i in range(len(df_filtered) - 1):
+                try:
+                    # State at time t (dual drug: 13 dimensions)
+                    state = self._extract_state_dualdrug(df_filtered, i)
+                    
+                    # Action at time t: [propofol_rate, remifentanil_rate]
+                    ppf_rate = df_filtered.iloc[i]['PPF20_RATE']
+                    rftn_rate = df_filtered.iloc[i]['RFTN_RATE']
+                    action = np.array([ppf_rate, rftn_rate], dtype=np.float32)
+                    
+                    # State at time t+1
+                    next_state = self._extract_state_dualdrug(df_filtered, i + 1)
+                    
+                    # Reward (based on BIS target = 50)
+                    bis_t = df_filtered.iloc[i]['BIS']
+                    reward = self._compute_reward(bis_t)
+                    
+                    # Done flag
+                    done = (i == len(df_filtered) - 2)
+                    
+                    # Validate data
+                    if np.any(np.isnan(state)) or np.any(np.isnan(next_state)) or np.any(np.isnan(action)):
+                        continue
+                    
+                    if ppf_rate < 0 or ppf_rate > 30:  # Unrealistic propofol rates
+                        continue
+                    if rftn_rate < 0 or rftn_rate > 1.0:  # Unrealistic remifentanil rates
+                        continue
+                    
+                    states_list.append(state)
+                    actions_list.append(action)
+                    rewards_list.append(reward)
+                    next_states_list.append(next_state)
+                    dones_list.append(done)
+                    
+                except Exception as e:
+                    continue
+            
+            valid_cases += 1
+        
+        # Convert to numpy arrays
+        data = {
+            'states': np.array(states_list, dtype=np.float32),
+            'actions': np.array(actions_list, dtype=np.float32),  # shape: (N, 2)
+            'rewards': np.array(rewards_list, dtype=np.float32),
+            'next_states': np.array(next_states_list, dtype=np.float32),
+            'dones': np.array(dones_list, dtype=np.bool_),
+        }
+        
+        print(f"\\n\u2713 Dual drug training data prepared:")
+        print(f"  Valid cases: {valid_cases}/{n_cases}")
+        print(f"  Total transitions: {len(data['states']):,}")
+        print(f"  States shape: {data['states'].shape}")
+        print(f"  Actions shape: {data['actions'].shape}")
+        print(f"  Propofol range: [{data['actions'][:, 0].min():.2f}, {data['actions'][:, 0].max():.2f}] mg/kg/h")
+        print(f"  Remifentanil range: [{data['actions'][:, 1].min():.3f}, {data['actions'][:, 1].max():.3f}] \u03bcg/kg/min")
+        print(f"  BIS range: [{50 - data['states'][:, 0].max():.1f}, {50 - data['states'][:, 0].min():.1f}]")
+        print(f"  Mean reward: {data['rewards'].mean():.3f}")
+        
+        # Save if path provided
+        if save_path:
+            save_path = Path(save_path)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(save_path, 'wb') as f:
+                pickle.dump(data, f)
+            print(f"  Saved to: {save_path}")
+        
+        return data
+    
+    def _extract_state_dualdrug(self, df: pd.DataFrame, idx: int) -> np.ndarray:
+        """
+        Extract dual drug state vector (13 dimensions).
+        
+        State s_t = [
+            BIS_error,           # e_t = 50 - BIS_t
+            Ce_PPF,              # Propofol effect-site concentration
+            Ce_RFTN,             # Remifentanil effect-site concentration
+            dBIS/dt,             # BIS derivative
+            u_ppf_{t-1},         # Previous propofol action
+            u_rftn_{t-1},        # Previous remifentanil action
+            PPF_accumulation,    # Cumulative propofol (1 min)
+            RFTN_accumulation,   # Cumulative remifentanil (1 min)
+            BIS_slope,           # BIS slope (3 min)
+            Age,                 # Patient demographics
+            Weight,
+            Height,
+            Sex
+        ]
+        
+        Returns:
+            state: numpy array of shape (13,)
+        """
+        row = df.iloc[idx]
+        
+        # Core state variables
+        bis_error = 50 - row['BIS']  # Target BIS = 50
+        ce_ppf = row.get('Ce_PPF', 0.0) if 'Ce_PPF' in df.columns else 0.0
+        ce_rftn = row.get('Ce_RFTN', 0.0) if 'Ce_RFTN' in df.columns else 0.0
+        
+        # BIS derivative (dBIS/dt)
+        if idx > 0:
+            bis_prev = df.iloc[idx - 1]['BIS']
+            dt = 1  # 1 second interval
+            dbis_dt = (row['BIS'] - bis_prev) / dt
+        else:
+            dbis_dt = 0.0
+        
+        # Previous actions
+        if idx > 0:
+            u_ppf_prev = df.iloc[idx - 1]['PPF20_RATE']
+            u_rftn_prev = df.iloc[idx - 1].get('RFTN_RATE', 0.0)
+        else:
+            u_ppf_prev = 0.0
+            u_rftn_prev = 0.0
+        
+        # Cumulative drug amounts (past 60 seconds)
+        if idx >= 60:
+            ppf_acc = df.iloc[idx-60:idx]['PPF20_RATE'].sum()
+            rftn_acc = df.iloc[idx-60:idx].get('RFTN_RATE', pd.Series([0]*60)).sum()
+        else:
+            ppf_acc = df.iloc[:idx]['PPF20_RATE'].sum()
+            rftn_acc = df.iloc[:idx].get('RFTN_RATE', pd.Series([0]*idx)).sum()
+        
+        # BIS slope (past 180 seconds)
+        if idx >= 180:
+            bis_values = df.iloc[idx-180:idx]['BIS'].values
+            time_steps = np.arange(len(bis_values))
+            if len(bis_values) > 1:
+                bis_slope = np.polyfit(time_steps, bis_values, 1)[0]
+            else:
+                bis_slope = 0.0
+        else:
+            bis_slope = 0.0
+        
+        # Patient demographics
+        age = row.get('age', 50.0) / 100.0  # Normalize
+        weight = row.get('weight', 70.0) / 100.0  # Normalize
+        height = row.get('height', 170.0) / 200.0  # Normalize
+        sex = row.get('sex', 1.0)  # 1=male, 0=female
+        
+        state = np.array([
+            bis_error,
+            ce_ppf,
+            ce_rftn,
+            dbis_dt,
+            u_ppf_prev,
+            u_rftn_prev,
+            ppf_acc,
+            rftn_acc,
+            bis_slope,
+            age,
+            weight,
+            height,
+            sex
+        ], dtype=np.float32)
+        
+        return state
     
     def _extract_state(self, df: pd.DataFrame, idx: int) -> np.ndarray:
         """
@@ -586,14 +824,21 @@ class VitalDBLoader:
                 continue
             
             # Filter for cases with both drugs present
+            # Remifentanil threshold: 2.0 μg/kg/min (typical maintenance: 2-5 μg/kg/min)
             df_filtered = df[
                 (df['BIS'] >= bis_range[0]) & 
                 (df['BIS'] <= bis_range[1]) &
                 (df['BIS'].notna()) &
                 (df['PPF20_RATE'].notna()) &
                 (df['RFTN_RATE'].notna()) &
-                (df['RFTN_RATE'] > 0.01)  # Remifentanil must be actively used (> 0.01 μg/kg/min)
+                (df['RFTN_RATE'] > 0.5)  # Remifentanil > 0.5 μg/kg/min (clinically meaningful dual drug)
             ].copy()
+            
+            # Debug: Log case filtering details
+            if processed_cases <= 10:  # Print first 10 cases
+                rftn_mean = df['RFTN_RATE'].mean() if 'RFTN_RATE' in df.columns else 0
+                rftn_max = df['RFTN_RATE'].max() if 'RFTN_RATE' in df.columns else 0
+                print(f"    Case {caseid}: RFTN mean={rftn_mean:.2f}, max={rftn_max:.2f} μg/kg/min, filtered samples={len(df_filtered)}")
             
             if len(df_filtered) < 10:
                 debug_stats['insufficient_samples'] += 1
@@ -663,6 +908,7 @@ class VitalDBLoader:
         print(f"\n📊 Debug Statistics:")
         print(f"  Scanned: {processed_cases} cases")
         print(f"  Valid: {valid_cases} cases")
+        print(f"  💊 Remifentanil filter: > 2.0 μg/kg/min (clinical threshold)")
         print(f"  Filtered out:")
         print(f"    - No data/too short: {debug_stats['no_data']}")
         print(f"    - No demographics (age/sex/BMI): {debug_stats['no_demographics']}")
@@ -672,10 +918,20 @@ class VitalDBLoader:
         
         # Convert to numpy arrays
         states = np.array(states_list, dtype=np.float32)
-        actions = np.array(actions_list, dtype=np.float32)
+        actions_raw = np.array(actions_list, dtype=np.float32)
         next_states = np.array(next_states_list, dtype=np.float32)
         rewards = np.array(rewards_list, dtype=np.float32)
         dones = np.array(dones_list, dtype=np.bool_)
+        
+        # Normalize actions to [0, 1] range
+        # Propofol: 0-30 mg/kg/h → [0, 1]
+        # Remifentanil: 0-50 μg/kg/min → [0, 1]
+        PPF_MAX = 30.0   # mg/kg/h (typical max)
+        RFTN_MAX = 50.0  # μg/kg/min (typical max)
+        
+        actions = actions_raw.copy()
+        actions[:, 0] = actions_raw[:, 0] / PPF_MAX   # Normalize propofol
+        actions[:, 1] = actions_raw[:, 1] / RFTN_MAX  # Normalize remifentanil
         
         print(f"\n✓ Dual drug training data prepared:")
         print(f"  Valid cases: {valid_cases} (scanned {processed_cases})")
@@ -685,8 +941,11 @@ class VitalDBLoader:
         print(f"  Rewards shape: {rewards.shape}")
         print(f"  Dones shape: {dones.shape}")
         if len(actions) > 0:
-            print(f"  Propofol range: [{actions[:, 0].min():.2f}, {actions[:, 0].max():.2f}] mg/kg/h")
-            print(f"  Remifentanil range: [{actions[:, 1].min():.2f}, {actions[:, 1].max():.2f}] μg/kg/min")
+            print(f"  Propofol RAW: mean={actions_raw[:, 0].mean():.2f}, range=[{actions_raw[:, 0].min():.2f}, {actions_raw[:, 0].max():.2f}] mg/kg/h")
+            print(f"  Remifentanil RAW: mean={actions_raw[:, 1].mean():.2f}, range=[{actions_raw[:, 1].min():.2f}, {actions_raw[:, 1].max():.2f}] μg/kg/min")
+            print(f"  ⚠️  Expected remifentanil: 2-5 μg/kg/min (maintenance), got {actions_raw[:, 1].mean():.2f} μg/kg/min")
+            print(f"  Propofol NORMALIZED range: [{actions[:, 0].min():.4f}, {actions[:, 0].max():.4f}]")
+            print(f"  Remifentanil NORMALIZED range: [{actions[:, 1].min():.4f}, {actions[:, 1].max():.4f}]")
             print(f"  BIS range: [{50 - states[:, 0].max():.1f}, {50 - states[:, 0].min():.1f}]")
             print(f"  Reward range: [{rewards.min():.3f}, {rewards.max():.3f}]")
             print(f"  Reward mean: {rewards.mean():.3f} ± {rewards.std():.3f}")

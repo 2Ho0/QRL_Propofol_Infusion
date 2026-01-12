@@ -116,8 +116,17 @@ def main():
     # ========================================
     train_data, val_data, test_data = train_hybrid.split_vitaldb_data(
         n_total_cases=args.n_cases,
-        data_path=args.data_path
+        data_path=args.data_path,
+        dual_drug=args.dual_drug
     )
+    
+    # Determine state and action dimensions from data
+    state_dim = train_data['states'].shape[1] if len(train_data['states'].shape) > 1 else 1
+    action_dim = train_data['actions'].shape[1] if len(train_data['actions'].shape) > 1 else 1
+    
+    print(f"\n✓ Data dimensions:")
+    print(f"  State dim: {state_dim} ({'dual drug' if args.dual_drug else 'single drug'})")
+    print(f"  Action dim: {action_dim}")
     
     # ========================================
     # Stage 1: Offline Pre-training
@@ -129,8 +138,8 @@ def main():
         
         print(f"\nSkipping offline training, loading from: {args.resume}")
         agent = ClassicalDDPGAgent(
-            state_dim=8,
-            action_dim=1,
+            state_dim=state_dim,
+            action_dim=action_dim,
             config=config,
             encoder_type=args.encoder,
             seed=args.seed
@@ -148,8 +157,8 @@ def main():
     else:
         # Create Classical agent
         agent = ClassicalDDPGAgent(
-            state_dim=8,
-            action_dim=1,
+            state_dim=state_dim,
+            action_dim=action_dim,
             config=config,
             encoder_type=args.encoder,
             seed=args.seed
@@ -195,8 +204,8 @@ def main():
     
     # Save pre-trained agent for comparison
     agent_pretrained = ClassicalDDPGAgent(
-        state_dim=8,
-        action_dim=1,
+        state_dim=state_dim,
+        action_dim=action_dim,
         config=config,
         encoder_type=args.encoder,
         seed=args.seed
@@ -225,8 +234,8 @@ def main():
         
         # Load best fine-tuned model
         best_finetuned = ClassicalDDPGAgent(
-            state_dim=8,
-            action_dim=1,
+            state_dim=state_dim,
+            action_dim=action_dim,
             config=config,
             encoder_type=args.encoder,
             seed=args.seed

@@ -479,9 +479,10 @@ class QuantumDDPGAgent:
                 'gamma': 0.99,
                 'tau': 0.005,
                 'batch_size': 64,
-                'actor_lr': 0.0001,
+                'actor_lr': 0.0003,  # Higher for BC
                 'critic_lr': 0.001,
-                'encoder_lr': 0.001,
+                'encoder_lr': 0.0005,
+                'weight_decay': 1e-5,  # L2 regularization
                 'buffer_size': 100000,
                 'warmup_steps': 1000,
                 'noise_type': 'ou',
@@ -676,18 +677,21 @@ class QuantumDDPGAgent:
     
     def _build_optimizers(self, training_config: Dict):
         """Build optimizers for actor, critic, and encoder."""
-        actor_lr = training_config.get('actor_lr', 0.0001)
+        actor_lr = training_config.get('actor_lr', 0.0003)
         critic_lr = training_config.get('critic_lr', 0.001)
-        encoder_lr = training_config.get('encoder_lr', 0.001)
+        encoder_lr = training_config.get('encoder_lr', 0.0005)
+        weight_decay = training_config.get('weight_decay', 1e-5)
         
         self.actor_optimizer = optim.Adam(
             self.actor.parameters(),
-            lr=actor_lr
+            lr=actor_lr,
+            weight_decay=weight_decay
         )
         
         self.critic_optimizer = optim.Adam(
             self.critic.parameters(),
-            lr=critic_lr
+            lr=critic_lr,
+            weight_decay=weight_decay
         )
         
         # Encoder optimizer if using temporal encoder
@@ -695,7 +699,8 @@ class QuantumDDPGAgent:
         if self.encoder is not None:
             self.encoder_optimizer = optim.Adam(
                 self.encoder.parameters(),
-                lr=encoder_lr
+                lr=encoder_lr,
+                weight_decay=weight_decay
             )
     
     def _build_noise(self, training_config: Dict):

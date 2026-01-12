@@ -3,7 +3,7 @@ Variational Quantum Circuit (VQC) for Policy Network
 ======================================================
 
 This module implements a 2-qubit Variational Quantum Circuit using PennyLane
-for the quantum policy network in the Quantum RL Propofol control system.
+with JAX backend for the quantum policy network in the Quantum RL Propofol control system.
 
 Architecture:
 -------------
@@ -19,14 +19,223 @@ For 2 Qubits:
 - Encoding: Angle embedding RX(feature * π)
 - Layers: RY-RZ rotations + CNOT entanglement
 - Output: Expectation value mapped to action [0, 1]
+
+JAX Backend:
+-------------
+- Uses PennyLane with JAX interface for faster quantum gradient computation
+- JIT compilation for circuit execution speedup
+- Compatible with PyTorch models through conversion
 """
 
 import numpy as np
 import pennylane as qml
-from pennylane import numpy as pnp
+import jax
+import jax.numpy as jnp
+from jax import jit, grad, vmap
 import torch
 import torch.nn as nn
 from typing import Optional, List, Tuple, Dict
+import os
+
+# Force JAX to use GPU
+os.environ['JAX_PLATFORMS'] = 'cuda'
+# Enable XLA optimizations
+os.environ['XLA_FLAGS'] = '--xla_gpu_cuda_data_dir=/usr/local/cuda'
+
+
+class JAXCircuitFunction(torch.autograd.Function):
+    """
+    Custom PyTorch autograd function to bridge JAX quantum circuit with PyTorch.
+    
+    This enables gradient flow from JAX backend to PyTorch models.
+    Optimized for GPU execution with batched operations.
+    """
+    
+    @staticmethod
+    def forward(ctx, circuit_fn, inputs, weights):
+        """
+        Forward pass: Execute JAX circuit on GPU.
+        
+        Args:
+            circuit_fn: JAX quantum circuit function
+            inputs: Input features (PyTorch tensor)
+            weights: Variational parameters (PyTorch tensor)
+        
+        Returns:
+            Circuit output as PyTorch tensor
+        """
+        # Convert to JAX arrays and place on GPU
+        with jax.default_device(jax.devices('gpu')[0]):
+            inputs_jax = jnp.asarray(inputs.detach().cpu().numpy())
+            weights_jax = jnp.asarray(weights.detach().cpu().numpy())
+            
+            # Execute circuit on GPU
+            output_jax = circuit_fn(inputs_jax, weights_jax)
+            
+            # Convert back to numpy on host (make writable copy)
+            output_np = np.asarray(output_jax).copy()
+        
+        # Store for backward
+        ctx.circuit_fn = circuit_fn
+        ctx.save_for_backward(inputs, weights)
+        ctx.inputs_jax = inputs_jax
+        ctx.weights_jax = weights_jax
+        
+        # Convert to PyTorch
+        output = torch.from_numpy(output_np).float()
+        if inputs.is_cuda:
+            output = output.to(inputs.device)
+        
+        return output
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        """
+        Backward pass: Compute gradients using JAX on GPU.
+        
+        Args:
+            grad_output: Gradient from downstream
+        
+        Returns:
+            Gradients w.r.t inputs and weights
+        """
+        inputs, weights = ctx.saved_tensors
+        circuit_fn = ctx.circuit_fn
+        inputs_jax = ctx.inputs_jax
+        weights_jax = ctx.weights_jax
+        
+        # Execute gradient computation on GPU
+        with jax.default_device(jax.devices('gpu')[0]):
+            # Define function to differentiate
+            def loss_fn(inputs_jax, weights_jax):
+                return circuit_fn(inputs_jax, weights_jax)
+            
+            # Compute gradients using JAX
+            grad_fn = jax.grad(loss_fn, argnums=(0, 1))
+            grads_jax = grad_fn(inputs_jax, weights_jax)
+            
+            # Convert gradients back to numpy (make writable copies)
+            grad_inputs_jax, grad_weights_jax = grads_jax
+            grad_inputs_np = np.asarray(grad_inputs_jax).copy()
+            grad_weights_np = np.asarray(grad_weights_jax).copy()
+        
+        # Convert to PyTorch
+        grad_inputs = torch.from_numpy(grad_inputs_np).float()
+        grad_weights = torch.from_numpy(grad_weights_np).float()
+        
+        if inputs.is_cuda:
+            grad_inputs = grad_inputs.to(inputs.device)
+            grad_weights = grad_weights.to(inputs.device)
+        
+        # Scale by upstream gradient
+        grad_output_np = grad_output.detach().cpu().numpy()
+        if grad_output.numel() == 1:
+            grad_inputs = grad_inputs * grad_output.item()
+            grad_weights = grad_weights * grad_output.item()
+        else:
+            # Handle batch case
+            grad_inputs = grad_inputs * grad_output.unsqueeze(-1)
+            grad_weights = grad_weights * grad_output.mean()
+        
+        return None, grad_inputs, grad_weights
+
+
+class JAXCircuitBatchFunction(torch.autograd.Function):
+    """
+    Custom PyTorch autograd function for batched JAX quantum circuits.
+    Optimized for GPU execution with vectorized operations.
+    """
+    
+    @staticmethod
+    def forward(ctx, circuit_batch_fn, inputs, weights):
+        """Forward pass for batch on GPU."""
+        # Execute on GPU
+        with jax.default_device(jax.devices('gpu')[0]):
+            inputs_jax = jnp.asarray(inputs.detach().cpu().numpy())
+            weights_jax = jnp.asarray(weights.detach().cpu().numpy())
+            
+            # Execute batched circuit on GPU
+            outputs_jax = circuit_batch_fn(inputs_jax, weights_jax)
+            
+            # Convert to numpy (make writable copy)
+            outputs_np = np.asarray(outputs_jax).copy()
+        
+        ctx.circuit_batch_fn = circuit_batch_fn
+        ctx.save_for_backward(inputs, weights)
+        ctx.inputs_jax = inputs_jax
+        ctx.weights_jax = weights_jax
+        
+        # Convert to PyTorch
+        outputs = torch.from_numpy(outputs_np).float()
+        if inputs.is_cuda:
+            outputs = outputs.to(inputs.device)
+        
+        return outputs
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        """Backward pass for batch on GPU."""
+        inputs, weights = ctx.saved_tensors
+        circuit_batch_fn = ctx.circuit_batch_fn
+        inputs_jax = ctx.inputs_jax
+        weights_jax = ctx.weights_jax
+        
+        # Execute gradient computation on GPU
+        with jax.default_device(jax.devices('gpu')[0]):
+            # Define vectorized gradient function
+            def single_circuit(input_single):
+                return circuit_batch_fn(input_single.reshape(1, -1), weights_jax)[0]
+            
+            # Compute gradients for each sample using vmap
+            grad_fn = jax.grad(single_circuit)
+            grad_inputs_jax = vmap(grad_fn)(inputs_jax)
+            
+            # Gradient w.r.t weights (averaged over batch)
+            def loss_fn(weights_jax):
+                outputs = circuit_batch_fn(inputs_jax, weights_jax)
+                return jnp.mean(outputs)
+            
+            grad_weights_jax = jax.grad(loss_fn)(weights_jax)
+            
+            # Convert to numpy (make writable copies)
+            grad_inputs_np = np.asarray(grad_inputs_jax).copy()
+            grad_weights_np = np.asarray(grad_weights_jax).copy()
+        
+        # Convert to PyTorch
+        grad_inputs = torch.from_numpy(grad_inputs_np).float()
+        grad_weights = torch.from_numpy(grad_weights_np).float()
+        
+        if inputs.is_cuda:
+            grad_inputs = grad_inputs.to(inputs.device)
+            grad_weights = grad_weights.to(inputs.device)
+        
+        # Scale by upstream gradient
+        grad_output_np = grad_output.detach().cpu().numpy()
+        grad_inputs = grad_inputs * grad_output.unsqueeze(-1)
+        grad_weights = grad_weights * grad_output.sum()
+        
+        return None, grad_inputs, grad_weights
+        
+        # Gradient w.r.t weights (averaged over batch)
+        def loss_fn(weights_jax):
+            outputs = circuit_batch_fn(inputs_jax, weights_jax)
+            return jnp.mean(outputs)
+        
+        grad_weights_jax = jax.grad(loss_fn)(weights_jax)
+        
+        # Convert to PyTorch
+        grad_inputs = torch.from_numpy(np.array(grad_inputs_jax)).float()
+        grad_weights = torch.from_numpy(np.array(grad_weights_jax)).float()
+        
+        if inputs.is_cuda:
+            grad_inputs = grad_inputs.to(inputs.device)
+            grad_weights = grad_weights.to(inputs.device)
+        
+        # Scale by upstream gradient
+        grad_inputs = grad_inputs * grad_output.unsqueeze(-1)
+        grad_weights = grad_weights * grad_output.sum()
+        
+        return None, grad_inputs, grad_weights
 
 
 class VariationalQuantumCircuit:
@@ -89,12 +298,12 @@ class VariationalQuantumCircuit:
         self._create_qnode()
     
     def _create_qnode(self):
-        """Create the PennyLane QNode for the VQC."""
+        """Create the PennyLane QNode for the VQC with JAX interface."""
         
-        @qml.qnode(self.dev, interface="torch", diff_method="backprop")
+        @qml.qnode(self.dev, interface="jax", diff_method="backprop")
         def circuit(inputs, weights):
             """
-            Variational quantum circuit.
+            Variational quantum circuit with JAX.
             
             Args:
                 inputs: Input features to encode (shape: [n_qubits])
@@ -107,7 +316,7 @@ class VariationalQuantumCircuit:
             # Scale inputs to [0, π] range for rotation gates
             for i in range(self.n_qubits):
                 # Encode feature as rotation angle
-                qml.RX(inputs[i] * np.pi, wires=i)
+                qml.RX(inputs[i] * jnp.pi, wires=i)
             
             # Variational layers
             for layer in range(self.n_layers):
@@ -127,7 +336,11 @@ class VariationalQuantumCircuit:
             # Measurement: expectation value of Z on first qubit
             return qml.expval(qml.PauliZ(0))
         
-        self.circuit = circuit
+        # JIT compile the circuit for faster execution
+        self.circuit = jit(circuit)
+        
+        # Create vectorized version for batch processing
+        self.circuit_batch = jit(vmap(circuit, in_axes=(0, None)))
     
     def forward(
         self, 
@@ -135,7 +348,7 @@ class VariationalQuantumCircuit:
         weights: torch.Tensor
     ) -> torch.Tensor:
         """
-        Forward pass through the VQC.
+        Forward pass through the VQC with JAX backend and PyTorch gradient support.
         
         Args:
             inputs: Input features (shape: [batch_size, n_qubits] or [n_qubits])
@@ -146,14 +359,11 @@ class VariationalQuantumCircuit:
         """
         # Handle batched inputs
         if inputs.dim() == 1:
-            return self.circuit(inputs, weights)
+            # Single input - use custom autograd function
+            return JAXCircuitFunction.apply(self.circuit, inputs, weights)
         else:
-            # Batch processing
-            results = []
-            for i in range(inputs.shape[0]):
-                result = self.circuit(inputs[i], weights)
-                results.append(result)
-            return torch.stack(results)
+            # Batch processing with vectorized circuit
+            return JAXCircuitBatchFunction.apply(self.circuit_batch, inputs, weights)
     
     def get_initial_weights(self, seed: Optional[int] = None) -> torch.Tensor:
         """
@@ -177,9 +387,13 @@ class VariationalQuantumCircuit:
         """
         Draw the quantum circuit.
         
-        Args:
-            inputs: Example input features
+        ArConvert to JAX arrays
+        inputs_jax = jnp.array(inputs)
+        weights_jax = jnp.array(weights)
         
+        # Use qml.draw with JAX arrays
+        drawer = qml.draw(self.circuit)
+        return drawer(inputs_jax, weights_jax
         Returns:
             String representation of the circuit
         """
@@ -273,10 +487,11 @@ class QuantumPolicy(nn.Module):
         # Output scaling layer
         output_layer = nn.Linear(16, self.action_dim)
         
-        # Initialize bias to encourage higher initial actions
-        # sigmoid(0.5) ≈ 0.62, preventing quantum policy from outputting very low actions
-        # This is critical for meaningful drug infusion control
-        nn.init.constant_(output_layer.bias, 0.5)
+        # Initialize bias to match VitalDB data distribution
+        # VitalDB normalized action mean: ~0.025 (5 μg/kg/min out of 200 max)
+        # sigmoid(x) = 0.025 => x = log(0.025/0.975) ≈ -3.66
+        # Start conservative to match expert data distribution
+        nn.init.constant_(output_layer.bias, -3.5)  # sigmoid(-3.5) ≈ 0.029
         
         self.output_scale = nn.Sequential(
             nn.Linear(1, 16),

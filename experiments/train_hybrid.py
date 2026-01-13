@@ -959,16 +959,16 @@ def stage2_online_finetuning(
             episode_step += 1
             
             if use_high_dose:
-                # Force high doses in early episodes to learn induction phase
+                # Force moderate doses in early episodes to explore BIS 40-60 range
                 # Actions in physical units matching env action_space
-                # Target: Propofol 15-30 mg/kg/h, Remifentanil 0.5-0.8 μg/kg/min
+                # Target: Propofol 8-15 mg/kg/h, Remifentanil 0.2-0.5 μg/kg/min (for BIS 40-60)
                 if agent.action_dim == 2:
                     action = np.array([
-                        np.random.uniform(15.0, 30.0),  # Propofol: 15-30 mg/kg/h (high for induction)
-                        np.random.uniform(0.5, 0.8)     # Remifentanil: 0.5-0.8 μg/kg/min (moderate-high)
+                        np.random.uniform(8.0, 15.0),   # Propofol: 8-15 mg/kg/h (moderate for BIS 40-60)
+                        np.random.uniform(0.2, 0.5)     # Remifentanil: 0.2-0.5 μg/kg/min (moderate)
                     ])
                 else:
-                    action = np.array([np.random.uniform(15.0, 30.0)])  # Single drug: 15-30 mg/kg/h
+                    action = np.array([np.random.uniform(8.0, 15.0)])  # Single drug: 8-15 mg/kg/h
             else:
                 # Select action from agent (with exploration noise if enabled)
                 # Agent returns scaled actions [0, action_scale] where action_scale=30.0

@@ -170,12 +170,13 @@ class DualDrugEnv(gym.Env):
         self,
         target_bis: float = 50.0,
         bis_noise_std: float = 2.0,
-        max_steps: int = 200,
+        max_steps: int = 360,  # 360 minutes = 6 hours (typical surgery duration)
         dt: float = 1.0,
         patient_params: Optional[DualDrugPatientParams] = None,
         patient: Optional[PatientParameters] = None,
         seed: Optional[int] = None,
-        reward_type: str = 'potential'
+        reward_type: str = 'potential',
+        initial_bis: Optional[float] = None
     ):
         """
         Initialize dual drug environment.
@@ -189,6 +190,7 @@ class DualDrugEnv(gym.Env):
             patient: PatientParameters object (preferred)
             seed: Random seed
             reward_type: Reward function type ('simple', 'paper', 'hybrid', 'potential')
+            initial_bis: Initial BIS value (None=start from 98, or specify 40-60 for VitalDB-like start)
         
         Note:
             This environment now uses PatientSimulator as the internal physics engine
@@ -198,6 +200,7 @@ class DualDrugEnv(gym.Env):
         
         self.target_bis = target_bis
         self.bis_noise_std = bis_noise_std
+        self.initial_bis = initial_bis  # Store for reset
         self.max_steps = max_steps
         self.dt = dt  # Time step in minutes
         self.reward_type = reward_type
@@ -207,12 +210,12 @@ class DualDrugEnv(gym.Env):
             np.random.seed(seed)
         
         # Action space: [propofol_rate, remifentanil_rate]
-        # Updated ranges based on clinical practice:
-        # - Propofol: 0-15 mg/kg/h (typical: 4-12)
-        # - Remifentanil: 0-0.5 μg/kg/min (typical: 0.05-0.3)
+        # Ranges match VitalDB data:
+        # - Propofol: 0-30 mg/kg/h (typical: 4-12, max observed ~20)
+        # - Remifentanil: 0-1.0 μg/kg/min (typical: 0.05-0.3, max observed ~0.9)
         self.action_space = spaces.Box(
             low=np.array([0.0, 0.0]),
-            high=np.array([15.0, 0.5]),  # [mg/kg/h, μg/kg/min]
+            high=np.array([30.0, 1.0]),  # [mg/kg/h, μg/kg/min]
             dtype=np.float32
         )
         
@@ -274,8 +277,20 @@ class DualDrugEnv(gym.Env):
         # Reset PatientSimulator (physics engine)
         simulator_state = self.simulator.reset()
         
-        # Get initial BIS from simulator
-        self.bis = self.simulator.get_bis()
+        # Set initial BIS (either from parameter or default from simulator)
+        if self.initial_bis is not None:
+            # Initialize with target BIS by setting appropriate drug concentrations
+            # Use inverse PD model to find required concentrations
+            target_ce_ppf, target_ce_remi = self._compute_target_concentrations(self.initial_bis)
+            self.simulator.state_ppf[3] = target_ce_ppf  # Effect-site
+            self.simulator.state_ppf[0] = target_ce_ppf  # Central compartment
+            self.simulator.state_rftn[3] = target_ce_remi
+            self.simulator.state_rftn[0] = target_ce_remi
+            self.bis = self.initial_bis
+        else:
+            # Get initial BIS from simulator (default: 98)
+            self.bis = self.simulator.get_bis()
+        
         self.bis_history = [self.bis]
         
         # Previous actions
@@ -328,16 +343,23 @@ class DualDrugEnv(gym.Env):
         ppf_rate, rftn_rate = action
         
         # Update physics using PatientSimulator
-        # Convert mg/kg/h to mg/kg/min for propofol
-        ppf_rate_per_min = ppf_rate / 60.0
-        rftn_rate_per_min = rftn_rate  # Already in μg/kg/min
+        # CRITICAL UNIT CONVERSION:
+        # Environment units: mg/kg/h (propofol), μg/kg/min (remifentanil)
+        # Simulator expects: μg/kg/min (propofol), ng/kg/min (remifentanil)
         
-        # PatientSimulator.step expects rates in units per minute
-        # It internally handles time step (dt) conversion
+        # Propofol: mg/kg/h → μg/kg/min
+        # 1 mg/kg/h = (1/60) mg/kg/min = (1000/60) μg/kg/min
+        ppf_rate_ug_per_min = (ppf_rate / 60.0) * 1000.0  # μg/kg/min
+        
+        # Remifentanil: μg/kg/min → ng/kg/min
+        # 1 μg/kg/min = 1000 ng/kg/min
+        rftn_rate_ng_per_min = rftn_rate * 1000.0  # ng/kg/min
+        
+        # PatientSimulator.step expects rates in units per minute and dt in seconds
         simulator_state, bis_value = self.simulator.step(
-            infusion_rate=ppf_rate_per_min,  # mg/kg/min
+            infusion_rate=ppf_rate_ug_per_min,  # μg/kg/min
             dt=self.dt * 60,  # Convert minutes to seconds
-            rftn_rate=rftn_rate_per_min  # μg/kg/min
+            rftn_rate=rftn_rate_ng_per_min  # ng/kg/min
         )
         
         # Get BIS from simulator
@@ -773,6 +795,42 @@ class DualDrugEnv(gym.Env):
             'mean_dose_rftn': mean_dose_rftn,  # μg/kg/min
             'final_bis': bis_array[-1] if len(bis_array) > 0 else None
         }
+    
+    def _compute_target_concentrations(self, target_bis: float) -> Tuple[float, float]:
+        """
+        Compute drug concentrations needed to achieve target BIS.
+        
+        Uses inverse PD model to find propofol and remifentanil concentrations
+        that result in the desired BIS value.
+        
+        Args:
+            target_bis: Desired BIS value (e.g., 50)
+        
+        Returns:
+            (ce_ppf, ce_rftn): Effect-site concentrations for propofol and remifentanil
+        """
+        # Use typical clinical ratios from VitalDB data
+        # Propofol: ~4-6 mg/kg/h -> Ce ~3-5 μg/ml
+        # Remifentanil: ~0.1-0.15 μg/kg/min -> Ce ~3-5 ng/ml
+        
+        # From drug interaction model: BIS = 98 * (1 + Ce_ppf/4.47 + Ce_remi/19.3)^(-1.43)
+        # Rearrange: (98/BIS)^(1/1.43) = 1 + Ce_ppf/4.47 + Ce_remi/19.3
+        
+        if target_bis >= 98:
+            return 0.0, 0.0
+        
+        # Target ratio from equation
+        target_ratio = (98.0 / target_bis) ** (1.0 / 1.43) - 1.0
+        
+        # Use typical clinical ratio: propofol contributes ~60%, remifentanil ~40%
+        ppf_contribution = 0.6 * target_ratio
+        remi_contribution = 0.4 * target_ratio
+        
+        # Convert to concentrations
+        ce_ppf = ppf_contribution * 4.47  # μg/ml
+        ce_rftn = remi_contribution * 19.3  # ng/ml
+        
+        return ce_ppf, ce_rftn
     
     def render(self):
         """Render environment (text-based)."""

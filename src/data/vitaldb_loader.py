@@ -80,8 +80,8 @@ class VitalDBLoader:
         
         # Check first N cases
         # Dual drug needs more data, so scan more cases
-        max_check = 6000  # Can be adjusted via parameter
-        check_cases = ppf_cases[:min(max_check, len(ppf_cases))]
+        max_check = min(15000, len(ppf_cases))  # Scan up to 15000 cases to find more valid data
+        check_cases = ppf_cases[:max_check]
         
         print(f"  Scanning first {len(check_cases)} cases (out of {len(ppf_cases)} total)...")
         

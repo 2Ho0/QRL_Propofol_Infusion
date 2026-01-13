@@ -61,11 +61,11 @@ def parse_args():
     )
     
     # VitalDB data
-    parser.add_argument('--n_cases', type=int, default=300,
+    parser.add_argument('--n_cases', type=int, default=6000,
                        help='Number of VitalDB cases to load (more data = better BC)')
     parser.add_argument('--sampling_interval', type=int, default=60,
                        help='Sampling interval for VitalDB data (1=all data, higher=faster)')
-    parser.add_argument('--offline_epochs', type=int, default=150,
+    parser.add_argument('--offline_epochs', type=int, default=10,
                        help='Number of offline pre-training epochs (more epochs for better BC)')
     parser.add_argument('--batch_size', type=int, default=128,
                        help='Batch size for offline training (smaller for better BC convergence)')
@@ -89,7 +89,7 @@ def parse_args():
                        help='Initial epochs with BC-only training (BC weight=1.0) for stability')
     
     # Online training
-    parser.add_argument('--online_episodes', type=int, default=500,
+    parser.add_argument('--online_episodes', type=int, default=300,
                        help='Number of online training episodes')
     parser.add_argument('--warmup_episodes', type=int, default=100,
                        help='Warmup episodes with forced high-dose exploration (induction learning)')
@@ -795,7 +795,7 @@ def main():
     
     data = prepare_training_data_with_remi(
             loader=loader,
-            n_cases=100,
+            n_cases=args.n_cases,
             add_induction=True,  # Induction data 추가
             n_induction_samples=2000  # 2000개 샘플
         )

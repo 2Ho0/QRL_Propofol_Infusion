@@ -1,8 +1,14 @@
 """
-Quantum vs Classical RL Comparison for Single Drug Control
-===========================================================
+Quantum vs Classical RL Comparison for Dual Drug Control
+=========================================================
 
-Compare Quantum and Classical agents on single drug environment (Propofol only).
+Compare Quantum and Classical agents on dual drug environment
+(Propofol + Remifentanil).
+
+Key differences from single drug comparison:
+- Action space: [propofol_rate, remifentanil_rate] (2D)
+- State space: Extended to include remifentanil Ce + demographics (13D)
+- Agents: action_dim=2, n_qubits=3 (increased for 13D state)
 
 Training Order:
 1. Classical Agent (faster, baseline)
@@ -42,7 +48,7 @@ import pandas as pd
 
 from agents.quantum_agent import QuantumDDPGAgent
 from agents.classical_agent import ClassicalDDPGAgent
-from environment.propofol_env import PropofolEnv
+from environment.dual_drug_env import DualDrugEnv
 from environment.patient_simulator import create_patient_population
 from data.vitaldb_loader import VitalDBLoader
 from data.vitaldb_loader_remi import prepare_training_data_with_remi
@@ -51,7 +57,7 @@ from train_hybrid import stage1_offline_pretraining, stage2_online_finetuning
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Compare Quantum vs Classical RL for Single Drug Control'
+        description='Compare Quantum vs Classical RL for Dual Drug Control'
     )
     
     # VitalDB data
@@ -85,18 +91,16 @@ def parse_args():
     # Online training
     parser.add_argument('--online_episodes', type=int, default=500,
                        help='Number of online training episodes')
-    parser.add_argument('--warmup_episodes', type=int, default=50,
-                       help='Warmup episodes before exploration')
+    parser.add_argument('--warmup_episodes', type=int, default=100,
+                       help='Warmup episodes with forced high-dose exploration (induction learning)')
     
     # Agent configuration
-    parser.add_argument('--state_dim', type=int, default=10,
-                       help='State dimension (10 with remifentanil history)')
-    parser.add_argument('--action_dim', type=int, default=1,
-                       help='Action dimension (propofol only)')
-    parser.add_argument('--use_remi_history', action='store_true', default=True,
-                       help='Include remifentanil infusion history in state')
+    parser.add_argument('--state_dim', type=int, default=13,
+                       help='State dimension for dual drug (extended with demographics: age, sex, BMI)')
+    parser.add_argument('--action_dim', type=int, default=2,
+                       help='Action dimension (propofol + remifentanil)')
     parser.add_argument('--n_qubits', type=int, default=3,
-                       help='Number of qubits for quantum circuit')
+                       help='Number of qubits for quantum circuit (3 qubits for 13D state)')
     parser.add_argument('--encoder', type=str, default='transformer',
                        choices=['none', 'lstm', 'transformer'],
                        help='Temporal encoder type')
@@ -132,45 +136,33 @@ def evaluate_agent_on_simulator(
     reward_type: str = 'potential',
     save_trajectories: bool = False
 ) -> Dict:
-    """Evaluate agent on single drug simulator (Propofol only)."""
+    """
+    Evaluate agent on dual drug simulator.
+    
+    Key differences:
+    - DualDrugEnv instead of PropofolEnv
+    - Action is 2D: [propofol_rate, remifentanil_rate]
+    - State is 13D (includes remifentanil Ce + patient demographics)
+    """
     patients = create_patient_population(n_patients=n_episodes, seed=seed)
-    
-    # Check if state padding is needed
-    env_test = PropofolEnv(seed=seed)
-    env_state_dim = env_test.observation_space.shape[0]
-    agent_state_dim = agent.state_dim
-    needs_padding = agent_state_dim > env_state_dim
-    
-    if needs_padding:
-        padding_dim = agent_state_dim - env_state_dim
-        # Use FIXED remifentanil values from VitalDB training distribution
-        # Random noise was causing agent confusion - use consistent values!
-        remi_ce_fixed = 0.1  # Median from VitalDB
-        remi_rate_fixed = 0.2  # Median from VitalDB
-    
-    def pad_state(state: np.ndarray) -> np.ndarray:
-        """Pad state with remifentanil features if needed."""
-        if needs_padding:
-            # Use FIXED padding (not random!) to match offline training
-            padding = np.array([remi_ce_fixed, remi_rate_fixed])
-            return np.concatenate([state, padding[:padding_dim]])
-        return state
     
     mdapes = []
     rewards_total = []
     propofol_usage = []
+    remifentanil_usage = []
     time_in_target = []
     
     # Store episode trajectories for detailed analysis
     episode_trajectories = []
     
-    for i, patient in enumerate(tqdm(patients, desc="Evaluating on Simulator")):
-        env = PropofolEnv(patient=patient, seed=seed + i, reward_type=reward_type)
+    for i, patient in enumerate(tqdm(patients, desc="Evaluating on Dual Drug Simulator")):
+        # Create dual drug environment with specified reward type
+        env = DualDrugEnv(patient=patient, seed=seed + i, reward_type=reward_type)
         
         state, _ = env.reset()
-        state = pad_state(state)  # Pad if needed
         episode_reward = 0
         episode_ppf = []
+        episode_rftn = []
         states_list = []
         bis_history = []
         actions_history = []
@@ -192,27 +184,41 @@ def evaluate_agent_on_simulator(
                     encoded = agent.encoder(states_seq)
                     if isinstance(encoded, tuple):
                         encoded = encoded[0]
+                    # Handle both 2D and 3D encoder outputs
                     if encoded.dim() == 3:
                         encoded = encoded[:, -1, :]
                     action = agent.actor(encoded)
                 else:
                     action = agent.actor(state_tensor)
             
+            # Action is 2D: [propofol, remifentanil] in [0, 1] from Sigmoid
             action_np = action.cpu().numpy().flatten()
             
-            # Simulator expects normalized action [0, 1]
-            next_state, reward, done, truncated, info = env.step(action_np)
-            next_state = pad_state(next_state)  # Pad if needed
+            # Ensure action is 2D
+            if action_np.shape[0] != 2:
+                print(f"Warning: Expected action_dim=2, got {action_np.shape[0]}. Using first 2 dimensions.")
+                action_np = action_np[:2]
+            
+            # Scale to physical units (actor outputs [0,1], need [0-30 mg/kg/h, 0-1.0 μg/kg/min])
+            action_physical = np.array([
+                action_np[0] * 30.0,  # Propofol [0,1] → [0,30 mg/kg/h]
+                action_np[1] * 1.0    # Remifentanil [0,1] → [0,1.0 μg/kg/min]
+            ])
+            
+            next_state, reward, done, truncated, info = env.step(action_physical)
             
             episode_reward += reward
-            # Store denormalized action for analysis (μg/kg/min)
-            action_denorm = action_np[0] * agent.action_scale if len(action_np) > 0 else 0.0
-            episode_ppf.append(action_denorm)
+            # Store actual drug infusion rates (already in physical units)
+            ppf_denorm = action_physical[0]  # Propofol (mg/kg/h)
+            rftn_denorm = action_physical[1]  # Remifentanil (μg/kg/min)
+            episode_ppf.append(ppf_denorm)
+            episode_rftn.append(rftn_denorm)
             states_list.append(state)
             
-            bis = info.get('bis', 50 - state[0])
+            # Track BIS for time in target
+            bis = info.get('bis', 50 - state[0])  # state[0] is BIS_error
             bis_history.append(bis)
-            actions_history.append(action_denorm)
+            actions_history.append(ppf_denorm)  # Store denormalized propofol for plot
             rewards_history.append(reward)
             time_steps.append(step)
             
@@ -221,10 +227,12 @@ def evaluate_agent_on_simulator(
             if done or truncated:
                 break
         
+        # Get metrics if available
         if hasattr(env, 'get_episode_metrics'):
             metrics = env.get_episode_metrics()
             mdapes.append(metrics.get('mdape', 0))
         else:
+            # Calculate MDAPE manually from BIS error if metrics not available
             if bis_history:
                 bis_array = np.array(bis_history)
                 target_bis = 50
@@ -235,7 +243,9 @@ def evaluate_agent_on_simulator(
         
         rewards_total.append(episode_reward)
         propofol_usage.append(np.mean(episode_ppf))
+        remifentanil_usage.append(np.mean(episode_rftn))
         
+        # Calculate time in target (BIS 45-55)
         bis_array = np.array(bis_history)
         tit = np.sum((bis_array >= 45) & (bis_array <= 55)) / len(bis_array) * 100
         time_in_target.append(tit)
@@ -263,6 +273,9 @@ def evaluate_agent_on_simulator(
         'propofol_usage_mean': np.mean(propofol_usage),
         'propofol_usage_std': np.std(propofol_usage),
         'propofol_usage_list': propofol_usage,
+        'remifentanil_usage_mean': np.mean(remifentanil_usage),
+        'remifentanil_usage_std': np.std(remifentanil_usage),
+        'remifentanil_usage_list': remifentanil_usage,
         'time_in_target_mean': np.mean(time_in_target),
         'time_in_target_std': np.std(time_in_target),
         'time_in_target_list': time_in_target
@@ -376,6 +389,8 @@ def save_results_to_csv(
         'Reward_std': [quantum_results['reward_std'], classical_results['reward_std']],
         'Propofol_mean': [quantum_results['propofol_usage_mean'], classical_results['propofol_usage_mean']],
         'Propofol_std': [quantum_results['propofol_usage_std'], classical_results['propofol_usage_std']],
+        'Remifentanil_mean': [quantum_results['remifentanil_usage_mean'], classical_results['remifentanil_usage_mean']],
+        'Remifentanil_std': [quantum_results['remifentanil_usage_std'], classical_results['remifentanil_usage_std']],
         'TimeInTarget_mean': [quantum_results['time_in_target_mean'], classical_results['time_in_target_mean']],
         'TimeInTarget_std': [quantum_results['time_in_target_std'], classical_results['time_in_target_std']],
     }
@@ -393,6 +408,8 @@ def save_results_to_csv(
         'Classical_Reward': classical_results['reward_list'],
         'Quantum_Propofol': quantum_results['propofol_usage_list'],
         'Classical_Propofol': classical_results['propofol_usage_list'],
+        'Quantum_Remifentanil': quantum_results['remifentanil_usage_list'],
+        'Classical_Remifentanil': classical_results['remifentanil_usage_list'],
         'Quantum_TimeInTarget': quantum_results['time_in_target_list'],
         'Classical_TimeInTarget': classical_results['time_in_target_list'],
     }
@@ -513,8 +530,8 @@ def plot_comparison(
     title: str, 
     save_path: Path
 ):
-    """Generate comparison plots."""
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    """Generate comparison plots for dual drug control."""
+    fig, axes = plt.subplots(3, 3, figsize=(18, 15))
     fig.suptitle(title, fontsize=16, fontweight='bold')
     
     use_boxplot = len(quantum_results['mdape_list']) >= 2
@@ -624,6 +641,45 @@ def plot_comparison(
     ax.set_title('BIS Control (45-55)', fontsize=13, fontweight='bold')
     ax.grid(axis='y', alpha=0.3)
     
+    # 7. Remifentanil Usage
+    ax = axes[2, 0]
+    rftn_means = [quantum_results['remifentanil_usage_mean'], classical_results['remifentanil_usage_mean']]
+    rftn_stds = [quantum_results['remifentanil_usage_std'], classical_results['remifentanil_usage_std']]
+    ax.bar(x_pos, rftn_means, yerr=rftn_stds, capsize=5, color=['lightblue', 'lightcoral'], alpha=0.7)
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(['Quantum', 'Classical'])
+    ax.set_ylabel('Mean Remifentanil Rate (μg/kg/min)', fontsize=12)
+    ax.set_title('Remifentanil Usage', fontsize=13, fontweight='bold')
+    ax.grid(axis='y', alpha=0.3)
+    
+    # 8. Reward vs MDAPE Scatter
+    ax = axes[2, 1]
+    ax.scatter(quantum_results['mdape_list'], quantum_results['reward_list'], 
+              alpha=0.6, s=50, label='Quantum', color='blue')
+    ax.scatter(classical_results['mdape_list'], classical_results['reward_list'], 
+              alpha=0.6, s=50, label='Classical', color='red')
+    ax.set_xlabel('MDAPE (%)', fontsize=12)
+    ax.set_ylabel('Total Reward', fontsize=12)
+    ax.set_title('Reward vs MDAPE', fontsize=13, fontweight='bold')
+    ax.legend()
+    ax.grid(alpha=0.3)
+    
+    # 9. Drug Usage Comparison
+    ax = axes[2, 2]
+    width = 0.35
+    x = np.arange(2)
+    ppf_means_plot = [quantum_results['propofol_usage_mean'], classical_results['propofol_usage_mean']]
+    rftn_means_plot = [quantum_results['remifentanil_usage_mean'], classical_results['remifentanil_usage_mean']]
+    
+    ax.bar(x - width/2, ppf_means_plot, width, label='Propofol', color='skyblue', alpha=0.7)
+    ax.bar(x + width/2, rftn_means_plot, width, label='Remifentanil', color='salmon', alpha=0.7)
+    ax.set_xticks(x)
+    ax.set_xticklabels(['Quantum', 'Classical'])
+    ax.set_ylabel('Drug Usage', fontsize=12)
+    ax.set_title('Drug Usage Comparison', fontsize=13, fontweight='bold')
+    ax.legend()
+    ax.grid(axis='y', alpha=0.3)
+    
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"✓ Plot saved to: {save_path}")
@@ -655,9 +711,21 @@ def evaluate_on_vitaldb_test_set(
             else:
                 action = agent.actor(state_tensor)
         
-        predicted_actions.append(action.cpu().numpy().flatten())
+        # Actor outputs [0,1], scale to physical units then back to [0,1] for comparison
+        action_np = action.cpu().numpy().flatten()
+        # Actor outputs [0,1], VitalDB actions also [0,1], so directly compare
+        predicted_actions.append(action_np)
     
     predicted_actions = np.array(predicted_actions)
+    
+    # Ensure shapes match for comparison
+    if predicted_actions.shape[1] != actions.shape[1]:
+        # Pad or trim if needed
+        if predicted_actions.shape[1] < actions.shape[1]:
+            padding = np.zeros((predicted_actions.shape[0], actions.shape[1] - predicted_actions.shape[1]))
+            predicted_actions = np.concatenate([predicted_actions, padding], axis=1)
+        else:
+            predicted_actions = predicted_actions[:, :actions.shape[1]]
     
     # MDAPE
     error = np.abs(predicted_actions - actions) / (np.abs(actions) + 1e-6)
@@ -701,17 +769,16 @@ def main():
     comparison_dir.mkdir(parents=True, exist_ok=True)
     
     print("\n" + "="*70)
-    print("QUANTUM vs CLASSICAL COMPARISON (SINGLE DRUG CONTROL + REMI HISTORY)")
+    print("QUANTUM vs CLASSICAL COMPARISON (DUAL DRUG CONTROL)")
     print("="*70)
     print(f"Configuration:")
-    print(f"  State dim: {args.state_dim} (with remifentanil history)" if args.use_remi_history else f"  State dim: {args.state_dim}")
-    print(f"  Action dim: {args.action_dim} (propofol only)")
+    print(f"  State dim: {args.state_dim} (includes remifentanil Ce + demographics)")
+    print(f"  Action dim: {args.action_dim} (propofol + remifentanil)")
     print(f"  VitalDB cases: {args.n_cases}")
     print(f"  Offline epochs: {args.offline_epochs}")
     print(f"  Online episodes: {args.online_episodes}")
     print(f"  Test episodes: {args.n_test_episodes}")
     print(f"  Encoder: {args.encoder}")
-    print(f"  Remifentanil: {'Included (historical data)' if args.use_remi_history else 'Not included'}")
     print(f"  Training order: Classical → Quantum")
     print(f"  Log dir: {comparison_dir}")
     print("="*70 + "\n")
@@ -723,19 +790,15 @@ def main():
     
     loader = VitalDBLoader(cache_dir='data/vitaldb_cache', use_cache=True)
     
-    print(f"\nLoading {args.n_cases} cases from VitalDB...")
+    print(f"\nLoading {args.n_cases} dual drug cases from VitalDB...")
+    print("  Mode: Dual drug control (Propofol + Remifentanil)")
     
-    if args.use_remi_history:
-        print("  Mode: Propofol control WITH remifentanil history")
-        data = prepare_training_data_with_remi(
+    data = prepare_training_data_with_remi(
             loader=loader,
-            n_cases=args.n_cases,
-            n_remi_cases=args.n_cases
+            n_cases=100,
+            add_induction=True,  # Induction data 추가
+            n_induction_samples=2000  # 2000개 샘플
         )
-    else:
-        print("  Mode: Propofol control WITHOUT remifentanil")
-        data = loader.prepare_training_data(n_cases=args.n_cases)
-    
     states = data['states']
     actions = data['actions']
     next_states = data['next_states']
@@ -751,11 +814,9 @@ def main():
     print(f"\n✓ Loaded data:")
     print(f"  States shape: {states.shape}")
     print(f"  Actions shape: {actions.shape}")
-    print(f"  State features: {args.state_dim}D")
-    print(f"  Action features: {args.action_dim}D (propofol only)")
-    if args.use_remi_history:
-        print(f"  Remifentanil: Included in state (Ce + rate)")
-        print(f"  Agent controls: Propofol only")
+    print(f"  State features: {args.state_dim}D (BIS error, Ce propofol, Ce remifentanil, demographics)")
+    print(f"  Action features: {args.action_dim}D (propofol + remifentanil)")
+    print(f"  Agent controls: Both propofol and remifentanil infusion rates")
     
     # Split data
     n_total = len(states)
@@ -914,16 +975,17 @@ def main():
                 action = classical_agent.actor(encoded)
             else:
                 action = classical_agent.actor(state_tensor)
-        sample_actions_pred.append(action.cpu().numpy().flatten()[0])
+        sample_actions_pred.append(action.cpu().numpy().flatten())  # Keep both actions
     sample_actions_pred = np.array(sample_actions_pred)
     
-    print(f"\nPredictions on Training Sample (n=100) - Normalized:")
+    print(f"\nPredictions on Training Sample (n={len(sample_indices)}) - Normalized:")
     print(f"  Predicted mean: {sample_actions_pred.mean():.4f} (normalized)")
     print(f"  True mean: {sample_actions_true.mean():.4f} (normalized)")
     print(f"  Predicted std: {sample_actions_pred.std():.4f}")
     print(f"  True std: {sample_actions_true.std():.4f}")
-    print(f"  MAE (normalized): {np.mean(np.abs(sample_actions_pred - sample_actions_true.flatten())):.4f}")
-    print(f"  MAE (μg/kg/min): {np.mean(np.abs(sample_actions_pred - sample_actions_true.flatten())) * classical_agent.action_scale:.2f}")
+    print(f"  MAE (normalized): {np.mean(np.abs(sample_actions_pred - sample_actions_true)):.4f}")
+    print(f"  Propofol MAE (mg/kg/h): {np.mean(np.abs(sample_actions_pred[:, 0] - sample_actions_true[:, 0])) * classical_agent.action_scale:.2f}")
+    print(f"  Remifentanil MAE (μg/kg/min): {np.mean(np.abs(sample_actions_pred[:, 1] - sample_actions_true[:, 1])) * 0.5:.3f}")
     
     print("="*70 + "\n")
     
@@ -939,7 +1001,7 @@ def main():
         dirs={'stage2': classical_dirs['stage2']},
         eval_interval=50,
         seed=args.seed,
-        env_class=PropofolEnv,
+        env_class=DualDrugEnv,
         device=device
     )
     
@@ -976,7 +1038,8 @@ def main():
     print(f"  MDAPE: {classical_sim_results['mdape_mean']:.2f}% ± {classical_sim_results['mdape_std']:.2f}%")
     print(f"  Reward: {classical_sim_results['reward_mean']:.2f} ± {classical_sim_results['reward_std']:.2f}")
     print(f"  Time in Target: {classical_sim_results['time_in_target_mean']:.2f}% ± {classical_sim_results['time_in_target_std']:.2f}%")
-    print(f"  Propofol Usage: {classical_sim_results['propofol_usage_mean']:.2f} ± {classical_sim_results['propofol_usage_std']:.2f} μg/kg/min")
+    print(f"  Propofol Usage: {classical_sim_results['propofol_usage_mean']:.2f} ± {classical_sim_results['propofol_usage_std']:.2f} mg/kg/h")
+    print(f"  Remifentanil Usage: {classical_sim_results['remifentanil_usage_mean']:.2f} ± {classical_sim_results['remifentanil_usage_std']:.2f} μg/kg/min")
     
     # Save classical trajectories
     print("\n" + "-"*70)
@@ -1064,7 +1127,7 @@ def main():
         dirs={'stage2': quantum_dirs['stage2']},
         eval_interval=50,
         seed=args.seed + 1000,
-        env_class=PropofolEnv,
+        env_class=DualDrugEnv,
         device=device
     )
     
@@ -1134,7 +1197,7 @@ def main():
     print("-"*70)
     plot_comparison(
         quantum_sim_results, classical_sim_results,
-        'Single Drug Control: Quantum vs Classical (Simulator)',
+        'Dual Drug Control: Quantum vs Classical (Simulator)',
         comparison_dir / 'comparison_simulator.png'
     )
     
@@ -1162,13 +1225,13 @@ def main():
     report_path = comparison_dir / 'summary_report.txt'
     with open(report_path, 'w') as f:
         f.write("="*70 + "\n")
-        f.write("SINGLE DRUG CONTROL: QUANTUM vs CLASSICAL RL COMPARISON\n")
+        f.write("DUAL DRUG CONTROL: QUANTUM vs CLASSICAL RL COMPARISON\n")
         f.write("="*70 + "\n\n")
         
         f.write("CONFIGURATION\n")
         f.write("-"*70 + "\n")
         f.write(f"State dimension: {args.state_dim}\n")
-        f.write(f"Action dimension: {args.action_dim} (propofol only)\n")
+        f.write(f"Action dimension: {args.action_dim} (propofol + remifentanil)\n")
         f.write(f"VitalDB cases: {args.n_cases}\n")
         f.write(f"Offline epochs: {args.offline_epochs}\n")
         f.write(f"Online episodes: {args.online_episodes}\n")
@@ -1192,6 +1255,14 @@ def main():
         f.write(f"Time in Target (BIS 45-55):\n")
         f.write(f"  Classical: {classical_sim_results['time_in_target_mean']:.1f}%\n")
         f.write(f"  Quantum:   {quantum_sim_results['time_in_target_mean']:.1f}%\n\n")
+        
+        f.write(f"Propofol Usage:\n")
+        f.write(f"  Classical: {classical_sim_results['propofol_usage_mean']:.2f} mg/kg/h\n")
+        f.write(f"  Quantum:   {quantum_sim_results['propofol_usage_mean']:.2f} mg/kg/h\n\n")
+        
+        f.write(f"Remifentanil Usage:\n")
+        f.write(f"  Classical: {classical_sim_results['remifentanil_usage_mean']:.2f} μg/kg/min\n")
+        f.write(f"  Quantum:   {quantum_sim_results['remifentanil_usage_mean']:.2f} μg/kg/min\n\n")
         
         f.write("STATISTICAL TESTS\n")
         f.write("-"*70 + "\n")

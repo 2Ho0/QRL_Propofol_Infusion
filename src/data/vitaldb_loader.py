@@ -269,7 +269,7 @@ class VitalDBLoader:
         bis_range: Optional[Tuple[float, float]] = None,
         min_duration: int = 1800,
         save_path: Optional[str] = None,
-        action_max: float = 200.0  # Maximum action scale for normalization
+        action_max: float = 30.0  # Match environment action_space (mg/kg/h)
     ) -> Dict[str, np.ndarray]:
         """
         Prepare training data for model-based QRL.
@@ -380,146 +380,6 @@ class VitalDBLoader:
         print(f"  States shape: {data['states'].shape}")
         print(f"  Actions range (normalized): [{data['actions'].min():.4f}, {data['actions'].max():.4f}]")
         print(f"  Actions range (raw μg/kg/min): [{data['actions'].min() * action_max:.2f}, {data['actions'].max() * action_max:.2f}]")
-        print(f"  BIS range: [{50 - data['states'][:, 0].max():.1f}, {50 - data['states'][:, 0].min():.1f}]")
-        print(f"  Mean reward: {data['rewards'].mean():.3f}")
-        
-        # Save if path provided
-        if save_path:
-            save_path = Path(save_path)
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(save_path, 'wb') as f:
-                pickle.dump(data, f)
-            print(f"  Saved to: {save_path}")
-        
-        return data
-    
-    def prepare_training_data_dualdrug(
-        self,
-        n_cases: int = 100,
-        bis_range: Optional[Tuple[float, float]] = None,
-        min_duration: int = 1800,
-        save_path: Optional[str] = None
-    ) -> Dict[str, np.ndarray]:
-        """
-        Prepare training data for dual drug control (Propofol + Remifentanil).
-        
-        Args:
-            n_cases: Number of cases to load
-            bis_range: BIS range filter (default: self.bis_range)
-            min_duration: Minimum case duration in seconds
-            save_path: Path to save prepared data
-            
-        Returns:
-            Dictionary with states, actions, rewards, next_states, dones
-            - states: shape (N, 13) - dual drug state
-            - actions: shape (N, 2) - [propofol_rate, remifentanil_rate]
-        """
-        if bis_range is None:
-            bis_range = self.bis_range
-        
-        print(f"\\nPreparing DUAL DRUG training data...")
-        print(f"  Target cases: {n_cases}")
-        print(f"  BIS range: {bis_range}")
-        print(f"  Min duration: {min_duration}s")
-        
-        # Get available cases
-        case_ids = self.get_available_cases(min_duration=min_duration)
-        
-        if len(case_ids) < n_cases:
-            print(f"  Warning: Only {len(case_ids)} cases available, using all")
-            n_cases = len(case_ids)
-        
-        # Sample cases
-        np.random.seed(42)
-        selected_cases = np.random.choice(case_ids, n_cases, replace=False)
-        
-        states_list = []
-        actions_list = []
-        rewards_list = []
-        next_states_list = []
-        dones_list = []
-        
-        valid_cases = 0
-        
-        for caseid in tqdm(selected_cases, desc="Loading dual drug cases"):
-            df = self.load_case(caseid)
-            
-            if df is None or len(df) < 10:
-                continue
-            
-            # Check if remifentanil data exists
-            if 'RFTN_RATE' not in df.columns or df['RFTN_RATE'].isna().all():
-                continue
-            
-            # Filter by BIS range
-            df_filtered = df[
-                (df['BIS'] >= bis_range[0]) & 
-                (df['BIS'] <= bis_range[1]) &
-                (df['BIS'].notna()) &
-                (df['PPF20_RATE'].notna()) &
-                (df['RFTN_RATE'].notna())
-            ].copy()
-            
-            if len(df_filtered) < 10:
-                continue
-            
-            # Extract transitions
-            for i in range(len(df_filtered) - 1):
-                try:
-                    # State at time t (dual drug: 13 dimensions)
-                    state = self._extract_state_dualdrug(df_filtered, i)
-                    
-                    # Action at time t: [propofol_rate, remifentanil_rate]
-                    ppf_rate = df_filtered.iloc[i]['PPF20_RATE']
-                    rftn_rate = df_filtered.iloc[i]['RFTN_RATE']
-                    action = np.array([ppf_rate, rftn_rate], dtype=np.float32)
-                    
-                    # State at time t+1
-                    next_state = self._extract_state_dualdrug(df_filtered, i + 1)
-                    
-                    # Reward (based on BIS target = 50)
-                    bis_t = df_filtered.iloc[i]['BIS']
-                    reward = self._compute_reward(bis_t)
-                    
-                    # Done flag
-                    done = (i == len(df_filtered) - 2)
-                    
-                    # Validate data
-                    if np.any(np.isnan(state)) or np.any(np.isnan(next_state)) or np.any(np.isnan(action)):
-                        continue
-                    
-                    if ppf_rate < 0 or ppf_rate > 30:  # Unrealistic propofol rates
-                        continue
-                    if rftn_rate < 0 or rftn_rate > 1.0:  # Unrealistic remifentanil rates
-                        continue
-                    
-                    states_list.append(state)
-                    actions_list.append(action)
-                    rewards_list.append(reward)
-                    next_states_list.append(next_state)
-                    dones_list.append(done)
-                    
-                except Exception as e:
-                    continue
-            
-            valid_cases += 1
-        
-        # Convert to numpy arrays
-        data = {
-            'states': np.array(states_list, dtype=np.float32),
-            'actions': np.array(actions_list, dtype=np.float32),  # shape: (N, 2)
-            'rewards': np.array(rewards_list, dtype=np.float32),
-            'next_states': np.array(next_states_list, dtype=np.float32),
-            'dones': np.array(dones_list, dtype=np.bool_),
-        }
-        
-        print(f"\\n\u2713 Dual drug training data prepared:")
-        print(f"  Valid cases: {valid_cases}/{n_cases}")
-        print(f"  Total transitions: {len(data['states']):,}")
-        print(f"  States shape: {data['states'].shape}")
-        print(f"  Actions shape: {data['actions'].shape}")
-        print(f"  Propofol range: [{data['actions'][:, 0].min():.2f}, {data['actions'][:, 0].max():.2f}] mg/kg/h")
-        print(f"  Remifentanil range: [{data['actions'][:, 1].min():.3f}, {data['actions'][:, 1].max():.3f}] \u03bcg/kg/min")
         print(f"  BIS range: [{50 - data['states'][:, 0].max():.1f}, {50 - data['states'][:, 0].min():.1f}]")
         print(f"  Mean reward: {data['rewards'].mean():.3f}")
         
@@ -831,7 +691,7 @@ class VitalDBLoader:
                 (df['BIS'].notna()) &
                 (df['PPF20_RATE'].notna()) &
                 (df['RFTN_RATE'].notna()) &
-                (df['RFTN_RATE'] > 0.5)  # Remifentanil > 0.5 μg/kg/min (clinically meaningful dual drug)
+                (df['RFTN_RATE'] > 0.01)  # Remifentanil > 0.01 μg/kg/min (clinically meaningful dual drug)
             ].copy()
             
             # Debug: Log case filtering details

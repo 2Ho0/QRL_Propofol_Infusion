@@ -291,7 +291,7 @@ class ClassicalDDPGAgent:
         self.gamma = training_config.get('gamma', 0.99)
         self.tau = training_config.get('tau', 0.005)
         self.batch_size = training_config.get('batch_size', 64)
-        self.action_scale = config.get('action_scale', 200.0)
+        self.action_scale = config.get('action_scale', 30.0)
         
         # Exploration noise
         noise_type = training_config.get('noise_type', 'ou')
@@ -363,7 +363,7 @@ class ClassicalDDPGAgent:
                 'noise_sigma': 0.2,
                 'noise_theta': 0.15
             },
-            'action_scale': 200.0
+            'action_scale': 30.0
         }
     
     def select_action(
@@ -427,7 +427,16 @@ class ClassicalDDPGAgent:
             action = np.clip(action, 0, 1)
         
         # Scale to action range
-        action_scaled = action * self.action_scale
+        # Handle dual drug vs single drug differently
+        if hasattr(action, '__len__') and len(action) == 2:
+            # Dual drug: [propofol, remifentanil]
+            action_scaled = np.array([
+                action[0] * 30.0,  # Propofol [0-1] → [0-30 mg/kg/h]
+                action[1] * 1.0    # Remifentanil [0-1] → [0-1.0 μg/kg/min]
+            ])
+        else:
+            # Single drug
+            action_scaled = action * self.action_scale
         
         return action_scaled
     
@@ -444,7 +453,7 @@ class ClassicalDDPGAgent:
         
         Args:
             state: Current state
-            action: Action taken
+            action: Action taken in physical units
             reward: Reward received
             next_state: Next state
             done: Whether episode ended
@@ -452,8 +461,17 @@ class ClassicalDDPGAgent:
         Returns:
             Dictionary of training metrics (critic_loss, actor_loss, q_value_mean) if update performed, empty dict otherwise
         """
-        # Store transition
-        action_normalized = action / self.action_scale
+        # Store transition - normalize action to [0, 1]
+        # Handle dual drug vs single drug differently
+        if hasattr(action, '__len__') and len(action) == 2:
+            # Dual drug: [propofol mg/kg/h, remifentanil μg/kg/min]
+            action_normalized = np.array([
+                action[0] / 30.0,  # Propofol [0-30] → [0-1]
+                action[1] / 1.0    # Remifentanil [0-1.0] → [0-1]
+            ])
+        else:
+            # Single drug
+            action_normalized = action / self.action_scale
         self.replay_buffer.push(state, action_normalized, reward, next_state, done)
         self.total_steps += 1
         

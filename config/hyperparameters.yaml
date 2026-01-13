@@ -107,7 +107,7 @@ quantum:
   feature_indices: [0, 1, 2]
   
   # Action mapping
-  action_scale: 200.0         # Max propofol dose for action scaling
+  action_scale: 30.0          # Max propofol dose for action scaling (mg/kg/h)
 
 # =============================================================================
 # Temporal Encoder Configuration (Fig.4)

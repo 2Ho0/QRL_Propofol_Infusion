@@ -840,6 +840,43 @@ def stage2_online_finetuning(
     # Create environment
     env = env_class(seed=seed)
     
+    # Test: Verify that high-dose infusion actually reduces BIS
+    print("\n" + "="*70)
+    print("ENVIRONMENT TEST: HIGH-DOSE INFUSION EFFECT")
+    print("="*70)
+    test_state, _ = env.reset()
+    initial_bis = env.bis
+    print(f"Initial BIS: {initial_bis:.1f}")
+    print(f"Testing high-dose infusion for 10 steps...")
+    
+    test_actions = []
+    test_bis_values = [initial_bis]
+    for step in range(10):
+        if agent.action_dim == 2:
+            action = np.array([25.0, 0.7])  # High dose
+        else:
+            action = np.array([25.0])
+        test_actions.append(action)
+        next_state, reward, terminated, truncated, info = env.step(action)
+        bis = info.get('bis', 50 - next_state[0])
+        test_bis_values.append(bis)
+        if step < 5 or step >= 8:
+            print(f"  Step {step+1}: Action={action}, BIS={bis:.1f}, Reward={reward:.3f}")
+    
+    print(f"BIS trajectory: {' → '.join([f'{v:.1f}' for v in test_bis_values[:6]])} ... {' → '.join([f'{v:.1f}' for v in test_bis_values[-3:]])}")
+    print(f"Final BIS: {test_bis_values[-1]:.1f}")
+    print(f"BIS change: {initial_bis:.1f} → {test_bis_values[-1]:.1f} (Δ {test_bis_values[-1] - initial_bis:+.1f})")
+    
+    if test_bis_values[-1] >= initial_bis - 5:
+        print("⚠️  WARNING: BIS did not decrease significantly!")
+        print("   This suggests the simulator may not be responding to drug infusion.")
+    else:
+        print("✅ Environment test passed: BIS decreases with drug infusion")
+    print("="*70 + "\n")
+    
+    # Reset environment for actual training
+    env = env_class(seed=seed)
+    
     # Check if state padding is needed (e.g., for remifentanil history)
     env_state_dim = env.observation_space.shape[0]
     agent_state_dim = agent.state_dim
@@ -889,6 +926,9 @@ def stage2_online_finetuning(
     episode_actor_losses = []
     episode_critic_losses = []
     
+    # Debug tracking for first few episodes
+    debug_episodes = []
+    
     for episode in tqdm(range(n_episodes), desc="Online Fine-tuning"):
         state, _ = env.reset()
         state = pad_state(state)  # Pad if needed
@@ -901,22 +941,72 @@ def stage2_online_finetuning(
         # Enable exploration after warmup
         add_noise = episode >= warmup_episodes
         
+        # High-dose exploration for initial episodes (induction learning)
+        use_high_dose = episode < warmup_episodes  # First N episodes
+        
+        # Track detailed info for first 3 episodes
+        track_details = episode < 3
+        if track_details:
+            episode_info = {
+                'episode': episode,
+                'actions': [],
+                'bis_values': [],
+                'rewards': [],
+                'states': []
+            }
+        
         while not done:
             episode_step += 1
-            # Select action (Quantum Actor)
-            action = agent.select_action(state, add_noise=add_noise)
+            
+            if use_high_dose:
+                # Force high doses in early episodes to learn induction phase
+                # Actions in physical units matching env action_space
+                # Target: Propofol 15-30 mg/kg/h, Remifentanil 0.5-0.8 μg/kg/min
+                if agent.action_dim == 2:
+                    action = np.array([
+                        np.random.uniform(15.0, 30.0),  # Propofol: 15-30 mg/kg/h (high for induction)
+                        np.random.uniform(0.5, 0.8)     # Remifentanil: 0.5-0.8 μg/kg/min (moderate-high)
+                    ])
+                else:
+                    action = np.array([np.random.uniform(15.0, 30.0)])  # Single drug: 15-30 mg/kg/h
+            else:
+                # Select action from agent (with exploration noise if enabled)
+                # Agent returns scaled actions [0, action_scale] where action_scale=30.0
+                action = agent.select_action(state, add_noise=add_noise)
+                # Clip to valid range (env action_space: [0-30, 0-1.0])
+                if agent.action_dim == 2:
+                    # Dual drug: clip each dimension separately
+                    action = np.array([
+                        np.clip(action[0], 0, 30.0),  # Propofol [0-30 mg/kg/h]
+                        np.clip(action[1], 0, 1.0)    # Remifentanil [0-1.0 μg/kg/min]
+                    ])
+                else:
+                    # Single drug: clip to [0-30 mg/kg/h]
+                    action = np.clip(action, 0, 30.0)
             
             # Step environment (Simulator)
-            action_normalized = np.clip(action / agent.action_scale, 0, 1)
-            next_state, reward, terminated, truncated, _ = env.step(action_normalized)
+            # Action is in physical units, env expects same range
+            next_state, reward, terminated, truncated, info = env.step(action)
             next_state = pad_state(next_state)  # Pad if needed
             done = terminated or truncated
             
-            # Online RL update
+            # Track details
+            if track_details:
+                bis = info.get('bis', 50 - state[0])  # state[0] is BIS_error
+                episode_info['actions'].append(action.copy())
+                episode_info['bis_values'].append(bis)
+                episode_info['rewards'].append(reward)
+                episode_info['states'].append(state[0])  # BIS error
+            
+            # Store transition in replay buffer (learn from high-dose attempts)
             agent.train_step(state, action, reward, next_state, done)
             
             episode_reward += reward
             state = next_state
+        
+        # Save debug info
+        if track_details:
+            debug_episodes.append(episode_info)
         
         # Decay exploration noise
         if add_noise:
@@ -937,9 +1027,14 @@ def stage2_online_finetuning(
         
         # 매 episode 간단한 로그 (10 episode마다)
         if (episode + 1) % 10 == 0 or episode == 0:
-            noise_status = "Explore" if add_noise else "Warmup"
+            if use_high_dose:
+                noise_status = "HighDose"
+            elif add_noise:
+                noise_status = "Explore"
+            else:
+                noise_status = "Warmup"
             recent_reward = np.mean(episode_rewards[-10:]) if len(episode_rewards) >= 10 else episode_reward
-            print(f"Ep {episode+1:4d}/{n_episodes} [{noise_status:7s}] | Reward: {episode_reward:7.2f} (avg: {recent_reward:7.2f}) | Steps: {episode_step:3d}")
+            print(f"Ep {episode+1:4d}/{n_episodes} [{noise_status:8s}] | Reward: {episode_reward:7.2f} (avg: {recent_reward:7.2f}) | Steps: {episode_step:3d}")
         
         # Log reward to file
         rewards_log_file.write(f"{episode_reward}\n")
@@ -962,8 +1057,9 @@ def stage2_online_finetuning(
                 
                 while not done:
                     action = agent.select_action(state, deterministic=True)
-                    action_normalized = np.clip(action / agent.action_scale, 0, 1)
-                    next_state, reward, terminated, truncated, _ = env.step(action_normalized)
+                    # action already in physical units [0-30 mg/kg/h, 0-1.0 μg/kg/min]
+                    action_clipped = np.clip(action, [0, 0], [30.0, 1.0]) if agent.action_dim == 2 else np.clip(action, 0, 30.0)
+                    next_state, reward, terminated, truncated, _ = env.step(action_clipped)
                     next_state = pad_state(next_state)  # Pad if needed
                     done = terminated or truncated
                     episode_reward += reward
@@ -1007,6 +1103,48 @@ def stage2_online_finetuning(
     
     # Close rewards log file
     rewards_log_file.close()
+    
+    # Print debug information for first 3 episodes
+    if debug_episodes:
+        print("\n" + "="*70)
+        print("DEBUG: FIRST 3 EPISODES DETAILED ANALYSIS")
+        print("="*70)
+        for ep_info in debug_episodes:
+            ep_num = ep_info['episode']
+            actions = np.array(ep_info['actions'])
+            bis_values = np.array(ep_info['bis_values'])
+            rewards = np.array(ep_info['rewards'])
+            
+            print(f"\n📊 Episode {ep_num}:")
+            print(f"  Initial BIS: {bis_values[0]:.1f}")
+            print(f"  Final BIS: {bis_values[-1]:.1f}")
+            print(f"  BIS change: {bis_values[0]:.1f} → {bis_values[-1]:.1f} (Δ {bis_values[-1] - bis_values[0]:+.1f})")
+            print(f"  Steps: {len(actions)}")
+            
+            if len(actions[0]) == 2:
+                print(f"  Propofol (mg/kg/h):")
+                print(f"    Mean: {actions[:, 0].mean():.2f}, Range: [{actions[:, 0].min():.2f}, {actions[:, 0].max():.2f}]")
+                print(f"  Remifentanil (μg/kg/min):")
+                print(f"    Mean: {actions[:, 1].mean():.3f}, Range: [{actions[:, 1].min():.3f}, {actions[:, 1].max():.3f}]")
+            else:
+                print(f"  Propofol (mg/kg/h):")
+                print(f"    Mean: {actions.mean():.2f}, Range: [{actions.min():.2f}, {actions.max():.2f}]")
+            
+            print(f"  Rewards:")
+            print(f"    Total: {rewards.sum():.2f}")
+            print(f"    Mean: {rewards.mean():.3f}")
+            print(f"    Range: [{rewards.min():.3f}, {rewards.max():.3f}]")
+            
+            # BIS trajectory over time
+            if len(bis_values) <= 20:
+                print(f"  BIS trajectory: {', '.join([f'{v:.1f}' for v in bis_values])}")
+            else:
+                # Show first 10 and last 10
+                first_10 = ', '.join([f'{v:.1f}' for v in bis_values[:10]])
+                last_10 = ', '.join([f'{v:.1f}' for v in bis_values[-10:]])
+                print(f"  BIS trajectory (first 10): {first_10}")
+                print(f"  BIS trajectory (last 10):  {last_10}")
+        print("="*70 + "\n")
     
     # Save training history (pickle)
     history = {
@@ -1087,10 +1225,12 @@ def stage3_testing(
             state = test_states[i]
             action = vitaldb_test_data['actions'][i]
             
-            # Get predicted action from agent
+            # Get predicted action from agent (returns physical units [0-30 mg/kg/h])
             pred_action = agent.select_action(state, deterministic=True)
+            # Normalize to [0, 1] for comparison with VitalDB data
+            pred_action_normalized = pred_action / 30.0 if agent.action_dim == 1 else np.array([pred_action[0] / 30.0, pred_action[1] / 1.0])
             
-            predicted_actions.append(pred_action[0] if len(pred_action) > 0 else pred_action)
+            predicted_actions.append(pred_action_normalized[0] if len(pred_action_normalized) > 0 else pred_action_normalized)
             ground_truth_actions.append(action[0] if len(action) > 0 else action)
         
         predicted_actions = np.array(predicted_actions)
@@ -1142,8 +1282,9 @@ def stage3_testing(
             
             while not done:
                 action = agent.select_action(state, deterministic=True)
-                action_normalized = np.clip(action / agent.action_scale, 0, 1)
-                next_state, reward, terminated, truncated, _ = env.step(action_normalized)
+                # action already in physical units, just clip to valid range
+                action_clipped = np.clip(action, [0, 0], [30.0, 1.0]) if hasattr(action, '__len__') and len(action) == 2 else np.clip(action, 0, 30.0)
+                next_state, reward, terminated, truncated, _ = env.step(action_clipped)
                 done = terminated or truncated
                 episode_reward += reward
                 state = next_state

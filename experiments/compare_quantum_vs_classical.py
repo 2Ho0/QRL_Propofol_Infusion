@@ -27,6 +27,8 @@ Usage:
     python experiments/compare_quantum_vs_classical.py \
         --n_cases 100 --encoder transformer
 """
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import sys
 from pathlib import Path
@@ -75,7 +77,7 @@ def parse_args():
                        help='Behavioral cloning weight (0.9 = 90% BC + 10% RL for hybrid training)')
     
     # CQL parameters
-    parser.add_argument('--use_cql', type=bool, default=False,
+    parser.add_argument('--use_cql', type=lambda x: (str(x).lower() == 'true'), default=False,
                        help='Use CQL instead of standard off-policy RL')
     parser.add_argument('--cql_alpha', type=float, default=1.0,
                        help='CQL penalty weight')
@@ -91,7 +93,7 @@ def parse_args():
     # Online training
     parser.add_argument('--online_episodes', type=int, default=300,
                        help='Number of online training episodes')
-    parser.add_argument('--warmup_episodes', type=int, default=100,
+    parser.add_argument('--warmup_episodes', type=int, default=30,
                        help='Warmup episodes with forced high-dose exploration (induction learning)')
     
     # Agent configuration
@@ -111,6 +113,10 @@ def parse_args():
     parser.add_argument('--reward_type', type=str, default='potential',
                        choices=['simple', 'paper', 'hybrid', 'potential'],
                        help='Reward function type')
+    
+    # Action Smoothing
+    parser.add_argument('--smoothing_beta', type=float, default=0.8,
+                       help='Exponential moving average factor for action smoothing (0.0=no smoothing, 0.8=strong smoothing)')
     
     # Directories
     parser.add_argument('--config', type=str, 
@@ -134,7 +140,8 @@ def evaluate_agent_on_simulator(
     seed: int,
     device: torch.device,
     reward_type: str = 'potential',
-    save_trajectories: bool = False
+    save_trajectories: bool = False,
+    smoothing_beta: float = 0.0
 ) -> Dict:
     """
     Evaluate agent on dual drug simulator.
@@ -169,41 +176,27 @@ def evaluate_agent_on_simulator(
         rewards_history = []
         time_steps = []
         
+        # Action smoothing initialization
+        prev_action = None
+        
         for step in range(200):
-            state_tensor = torch.FloatTensor(np.array(state, dtype=np.float32)).unsqueeze(0).to(device)
+            # CRITICAL: Use agent.select_action(deterministic=True) for consistent evaluation
+            # This ensures no exploration noise is added and matches training evaluation
+            action_physical = agent.select_action(state, deterministic=True)
             
-            with torch.no_grad():
-                if agent.encoder is not None:
-                    if len(states_list) == 0:
-                        states_seq = state_tensor.unsqueeze(0)
-                    else:
-                        recent_states = states_list[-19:] if len(states_list) >= 19 else states_list
-                        states_array = np.array(recent_states + [state], dtype=np.float32)
-                        states_seq = torch.FloatTensor(states_array).unsqueeze(0).to(device)
-                    
-                    encoded = agent.encoder(states_seq)
-                    if isinstance(encoded, tuple):
-                        encoded = encoded[0]
-                    # Handle both 2D and 3D encoder outputs
-                    if encoded.dim() == 3:
-                        encoded = encoded[:, -1, :]
-                    action = agent.actor(encoded)
+            # Ensure action is 2D for dual drug
+            if agent.action_dim == 2 and action_physical.shape[0] != 2:
+                print(f"Warning: Expected action_dim=2, got {action_physical.shape[0]}. Using first 2 dimensions.")
+                action_physical = action_physical[:2]
+            
+            # Apply EMA Smoothing
+            if smoothing_beta > 0.0:
+                if prev_action is None:
+                    prev_action = action_physical
                 else:
-                    action = agent.actor(state_tensor)
+                    action_physical = smoothing_beta * prev_action + (1 - smoothing_beta) * action_physical
+                    prev_action = action_physical
             
-            # Action is 2D: [propofol, remifentanil] in [0, 1] from Sigmoid
-            action_np = action.cpu().numpy().flatten()
-            
-            # Ensure action is 2D
-            if action_np.shape[0] != 2:
-                print(f"Warning: Expected action_dim=2, got {action_np.shape[0]}. Using first 2 dimensions.")
-                action_np = action_np[:2]
-            
-            # Scale to physical units (actor outputs [0,1], need [0-30 mg/kg/h, 0-1.0 μg/kg/min])
-            action_physical = np.array([
-                action_np[0] * 30.0,  # Propofol [0,1] → [0,30 mg/kg/h]
-                action_np[1] * 1.0    # Remifentanil [0,1] → [0,1.0 μg/kg/min]
-            ])
             
             next_state, reward, done, truncated, info = env.step(action_physical)
             
@@ -696,25 +689,27 @@ def evaluate_on_vitaldb_test_set(
     
     predicted_actions = []
     
+    # Set to eval mode for deterministic behavior
+    agent.actor.eval()
+    if hasattr(agent, 'encoder') and agent.encoder is not None:
+        agent.encoder.eval()
+    
     for state in tqdm(states, desc="VitalDB Test Set Evaluation"):
-        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
+        # CRITICAL: Use agent.select_action(deterministic=True) for consistent evaluation
+        action_physical = agent.select_action(state, deterministic=True)
         
-        with torch.no_grad():
-            if hasattr(agent, 'encoder') and agent.encoder is not None:
-                state_seq = state_tensor.unsqueeze(0)
-                encoded = agent.encoder(state_seq)
-                if isinstance(encoded, tuple):
-                    encoded = encoded[0]
-                if encoded.dim() == 3:
-                    encoded = encoded[:, -1, :]
-                action = agent.actor(encoded)
-            else:
-                action = agent.actor(state_tensor)
+        # Normalize action back to [0,1] for comparison with VitalDB normalized actions
+        if hasattr(action_physical, '__len__') and len(action_physical) == 2:
+            # Dual drug: denormalize back to [0,1]
+            action_normalized = np.array([
+                action_physical[0] / 30.0,  # Propofol [0-30] → [0-1]
+                action_physical[1] / 1.0    # Remifentanil [0-1.0] → [0-1]
+            ])
+        else:
+            # Single drug
+            action_normalized = action_physical / 30.0
         
-        # Actor outputs [0,1], scale to physical units then back to [0,1] for comparison
-        action_np = action.cpu().numpy().flatten()
-        # Actor outputs [0,1], VitalDB actions also [0,1], so directly compare
-        predicted_actions.append(action_np)
+        predicted_actions.append(action_normalized)
     
     predicted_actions = np.array(predicted_actions)
     
@@ -792,10 +787,12 @@ def main():
     
     print(f"\nLoading {args.n_cases} dual drug cases from VitalDB...")
     print("  Mode: Dual drug control (Propofol + Remifentanil)")
+    print(f"  Sampling interval: {args.sampling_interval}s ({'all data' if args.sampling_interval == 1 else f'{100 * (1 - 1/args.sampling_interval):.0f}% reduction'})")
     
     data = prepare_training_data_with_remi(
             loader=loader,
             n_cases=args.n_cases,
+            sampling_interval=args.sampling_interval,  # 샘플링 간격 적용
             add_induction=True,  # Induction data 추가
             n_induction_samples=2000  # 2000개 샘플
         )
@@ -1002,10 +999,22 @@ def main():
         eval_interval=50,
         seed=args.seed,
         env_class=DualDrugEnv,
-        device=device
+        device=device,
+        n_eval_patients=100  # Use 100 patients from large pool
     )
     
     print(f"✓ Classical agent trained")
+    
+    # Load best checkpoint for fair evaluation
+    print("\n" + "-"*70)
+    print("LOADING BEST CLASSICAL CHECKPOINT FOR EVALUATION")
+    print("-"*70)
+    best_classical_path = classical_dirs['stage2'] / 'best_mdape.pt'
+    if best_classical_path.exists():
+        classical_agent.load(str(best_classical_path))
+        print(f"✓ Loaded best MDAPE checkpoint: {best_classical_path}")
+    else:
+        print(f"⚠️  Best MDAPE checkpoint not found, using current model")
     
     # ========================================
     # Evaluate Classical Agent (Interim Results)
@@ -1013,6 +1022,17 @@ def main():
     print("\n" + "="*70)
     print("CLASSICAL AGENT - INTERIM EVALUATION")
     print("="*70)
+    
+    # Load best checkpoint for fair evaluation
+    print("\n" + "-"*70)
+    print("LOADING BEST CLASSICAL CHECKPOINT FOR EVALUATION")
+    print("-"*70)
+    best_classical_path = classical_dirs['stage2'] / 'best_mdape.pt'
+    if best_classical_path.exists():
+        classical_agent.load(str(best_classical_path))
+        print(f"✓ Loaded best MDAPE checkpoint: {best_classical_path}")
+    else:
+        print(f"⚠️  Best MDAPE checkpoint not found, using current model")
     
     # VitalDB test set
     print("\n" + "-"*70)
@@ -1031,7 +1051,7 @@ def main():
     
     classical_sim_results = evaluate_agent_on_simulator(
         classical_agent, args.n_test_episodes, args.seed + 2000, device, args.reward_type,
-        save_trajectories=True
+        save_trajectories=True, smoothing_beta=args.smoothing_beta
     )
     
     print(f"\n✓ Classical Simulator Results:")
@@ -1128,10 +1148,22 @@ def main():
         eval_interval=50,
         seed=args.seed + 1000,
         env_class=DualDrugEnv,
-        device=device
+        device=device,
+        n_eval_patients=100  # Use 100 patients from large pool
     )
     
     print(f"✓ Quantum agent trained")
+    
+    # Load best checkpoint for fair evaluation
+    print("\n" + "-"*70)
+    print("LOADING BEST QUANTUM CHECKPOINT FOR EVALUATION")
+    print("-"*70)
+    best_quantum_path = quantum_dirs['stage2'] / 'best_mdape.pt'
+    if best_quantum_path.exists():
+        quantum_agent.load(str(best_quantum_path))
+        print(f"✓ Loaded best MDAPE checkpoint: {best_quantum_path}")
+    else:
+        print(f"⚠️  Best MDAPE checkpoint not found, using current model")
     
     # ========================================
     # Final Evaluation (Both Agents)
@@ -1158,7 +1190,7 @@ def main():
     
     quantum_sim_results = evaluate_agent_on_simulator(
         quantum_agent, args.n_test_episodes, args.seed + 3000, device, args.reward_type,
-        save_trajectories=True
+        save_trajectories=True, smoothing_beta=args.smoothing_beta
     )
     
     print(f"\n✓ Simulator Results:")

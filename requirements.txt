@@ -38,7 +38,7 @@ tqdm>=4.65.0
 tensorboard>=2.13.0
 
 # VitalDB for real patient data
-vitaldb>=1.7.0
+vitaldb>=1.6.0
 
 # Data Processing for Offline RL
 h5py>=3.8.0

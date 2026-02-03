@@ -796,7 +796,8 @@ def stage2_online_finetuning(
     eval_interval: int,
     seed: int,
     env_class=None,
-    device: torch.device = None
+    device: torch.device = None,
+    n_eval_patients: int = 10
 ) -> QuantumDDPGAgent:
     """
     Stage 2: Online fine-tuning on simulator (NEW synthetic data).
@@ -851,7 +852,7 @@ def stage2_online_finetuning(
     
     test_actions = []
     test_bis_values = [initial_bis]
-    for step in range(10):
+    for step in range(2):
         if agent.action_dim == 2:
             action = np.array([25.0, 0.7])  # High dose
         else:
@@ -874,8 +875,13 @@ def stage2_online_finetuning(
         print("✅ Environment test passed: BIS decreases with drug infusion")
     print("="*70 + "\n")
     
-    # Reset environment for actual training
-    env = env_class(seed=seed)
+    # Create diverse patient population for training (prevents overfitting!)
+    print(f"Creating diverse patient population for training...")
+    train_patients = create_patient_population(n_episodes, seed=seed)
+    print(f"✓ Created {len(train_patients)} diverse patients")
+    
+    # Create initial environment for dimension checking
+    env = env_class(patient=train_patients[0], seed=seed)
     
     # Check if state padding is needed (e.g., for remifentanil history)
     env_state_dim = env.observation_space.shape[0]
@@ -903,8 +909,34 @@ def stage2_online_finetuning(
             return np.concatenate([state, padding[:padding_dim]])
         return state
     
-    # Create evaluation patients
-    eval_patients = create_patient_population(5, seed=seed + 1000)
+    # Create evaluation patients pool (large pool for better diversity)
+    # Sample different patients each evaluation to avoid overfitting to specific test set
+    n_eval_patients_pool = 3000  # Large pool covering diverse patient characteristics
+    eval_patients_pool = create_patient_population(n_eval_patients_pool, seed=seed + 1000)
+    print(f"\n✓ Created evaluation patient pool: {n_eval_patients_pool} patients (will sample {n_eval_patients} each eval)")
+    
+    # ========== OPTION 3: SEPARATE REPLAY BUFFERS ==========
+    # Create separate buffers for warmup (exploration) and main (exploitation)
+    print("\n" + "="*70)
+    print("OPTION 3: SEPARATE REPLAY BUFFER STRATEGY")
+    print("="*70)
+    print("Creating two separate replay buffers:")
+    print(f"  1. Warmup Buffer (exploration): {warmup_episodes} episodes")
+    print(f"  2. Main Buffer (exploitation): {n_episodes - warmup_episodes} episodes")
+    print("Benefits:")
+    print("  ✓ Data isolation: No mixing of exploration and exploitation data")
+    print("  ✓ Gradient stability: Consistent learning signals per phase")
+    print("  ✓ Memory efficiency: Warmup buffer deleted after phase ends")
+    print("="*70 + "\n")
+    
+    from agents.quantum_agent import ReplayBuffer
+    warmup_buffer = ReplayBuffer(capacity=50000, seed=seed)  # Temporary exploration buffer
+    main_buffer = ReplayBuffer(capacity=100000, seed=seed + 1)  # Long-term policy buffer
+    
+    # Track which buffer is currently active
+    current_buffer = None
+    warmup_buffer_stats = {'samples': 0, 'rewards': [], 'doses': []}
+    main_buffer_stats = {'samples': 0, 'rewards': [], 'doses': []}
     
     # Training metrics
     episode_rewards = []
@@ -918,7 +950,7 @@ def stage2_online_finetuning(
     rewards_log_path = dirs['stage2'] / 'episode_rewards.txt'
     rewards_log_file = open(rewards_log_path, 'w')
     
-    print(f"\nStarting online fine-tuning...")
+    print(f"Starting online fine-tuning...")
     print(f"Logging rewards to: {rewards_log_path}\n")
     
     # Training metrics tracking
@@ -930,6 +962,10 @@ def stage2_online_finetuning(
     debug_episodes = []
     
     for episode in tqdm(range(n_episodes), desc="Online Fine-tuning"):
+        # Use different patient for each episode (prevents overfitting!)
+        current_patient = train_patients[episode]
+        env = env_class(patient=current_patient, seed=seed + episode)
+        
         state, _ = env.reset()
         state = pad_state(state)  # Pad if needed
         agent.reset_noise()
@@ -998,8 +1034,37 @@ def stage2_online_finetuning(
                 episode_info['rewards'].append(reward)
                 episode_info['states'].append(state[0])  # BIS error
             
-            # Store transition in replay buffer (learn from high-dose attempts)
-            agent.train_step(state, action, reward, next_state, done)
+            # ========== OPTION 3: PHASE-SPECIFIC BUFFER STORAGE ==========
+            if use_high_dose:
+                # Warmup phase: Store in warmup_buffer for exploration learning
+                warmup_buffer.push(state, action, reward, next_state, done)
+                warmup_buffer_stats['samples'] += 1
+                warmup_buffer_stats['rewards'].append(reward)
+                if agent.action_dim == 2:
+                    warmup_buffer_stats['doses'].append(action[0])  # Track propofol dose
+                
+                # Train from warmup buffer only
+                if len(warmup_buffer) >= agent.batch_size:
+                    # Temporarily swap agent's buffer
+                    original_buffer = agent.replay_buffer
+                    agent.replay_buffer = warmup_buffer
+                    agent.update()
+                    agent.replay_buffer = original_buffer
+            else:
+                # Main phase: Store in main_buffer for policy improvement
+                main_buffer.push(state, action, reward, next_state, done)
+                main_buffer_stats['samples'] += 1
+                main_buffer_stats['rewards'].append(reward)
+                if agent.action_dim == 2:
+                    main_buffer_stats['doses'].append(action[0])  # Track propofol dose
+                
+                # Train from main buffer only
+                if len(main_buffer) >= agent.batch_size:
+                    # Temporarily swap agent's buffer
+                    original_buffer = agent.replay_buffer
+                    agent.replay_buffer = main_buffer
+                    agent.update()
+                    agent.replay_buffer = original_buffer
             
             episode_reward += reward
             state = next_state
@@ -1007,6 +1072,32 @@ def stage2_online_finetuning(
         # Save debug info
         if track_details:
             debug_episodes.append(episode_info)
+        
+        # ========== OPTION 3: WARMUP PHASE TRANSITION ==========
+        # Check if warmup just ended (first episode after warmup)
+        if episode == warmup_episodes:
+            print("\n" + "="*70)
+            print("WARMUP PHASE COMPLETE - BUFFER TRANSITION")
+            print("="*70)
+            print(f"Warmup Buffer Statistics:")
+            print(f"  Total samples: {warmup_buffer_stats['samples']}")
+            if warmup_buffer_stats['rewards']:
+                print(f"  Avg reward: {np.mean(warmup_buffer_stats['rewards']):.2f}")
+                print(f"  Reward range: [{np.min(warmup_buffer_stats['rewards']):.2f}, {np.max(warmup_buffer_stats['rewards']):.2f}]")
+            if warmup_buffer_stats['doses']:
+                print(f"  Avg propofol dose: {np.mean(warmup_buffer_stats['doses']):.2f} mg/kg/h")
+                print(f"  Dose range: [{np.min(warmup_buffer_stats['doses']):.2f}, {np.max(warmup_buffer_stats['doses']):.2f}] mg/kg/h")
+            
+            print(f"\n🗑️  Deleting warmup buffer to free memory...")
+            warmup_buffer_size = len(warmup_buffer)
+            del warmup_buffer  # Free memory
+            warmup_buffer = None  # Prevent accidental access
+            print(f"  ✓ Freed {warmup_buffer_size} samples from memory")
+            
+            print(f"\n✨ Switching to Main Buffer (clean slate for policy learning)")
+            print(f"  Main buffer size: {len(main_buffer)} samples")
+            print(f"  Training will now use ONLY agent's policy data")
+            print("="*70 + "\n")
         
         # Decay exploration noise
         if add_noise:
@@ -1046,7 +1137,10 @@ def stage2_online_finetuning(
             avg_mdape = np.mean(episode_mdape[-eval_interval:])
             avg_tit = np.mean(episode_time_in_target[-eval_interval:])
             
-            # Evaluate on test patients (simple evaluation)
+            # Evaluate on test patients (sample different patients each time)
+            eval_start_idx = ((episode + 1) // eval_interval - 1) * n_eval_patients % n_eval_patients_pool
+            eval_patients = eval_patients_pool[eval_start_idx:eval_start_idx + n_eval_patients]
+            
             eval_rewards = []
             eval_mdapes = []
             for patient in eval_patients:
@@ -1081,7 +1175,7 @@ def stage2_online_finetuning(
                 print(f"    - Avg Time in Target: {avg_tit:6.1f}%")
             print(f"    - Avg Steps:         {np.mean(episode_steps[-eval_interval:]):.1f}")
             if eval_mdapes:
-                print(f"  Test Performance (5 patients):")
+                print(f"  Test Performance ({n_eval_patients} patients):")
                 print(f"    - MDAPE:             {np.mean(eval_mdapes):7.2f}% ± {np.std(eval_mdapes):.2f}%")
                 print(f"    - Rewards:           {np.mean(eval_rewards):7.2f} ± {np.std(eval_rewards):.2f}")
             print(f"  {'='*60}")
@@ -1103,6 +1197,28 @@ def stage2_online_finetuning(
     
     # Close rewards log file
     rewards_log_file.close()
+    
+    # ========== OPTION 3: FINAL BUFFER STATISTICS ==========
+    print("\n" + "="*70)
+    print("FINAL BUFFER STATISTICS")
+    print("="*70)
+    if warmup_buffer_stats['samples'] > 0:
+        print(f"Warmup Phase (Episodes 0-{warmup_episodes-1}):")
+        print(f"  Total samples: {warmup_buffer_stats['samples']}")
+        if warmup_buffer_stats['rewards']:
+            print(f"  Avg reward: {np.mean(warmup_buffer_stats['rewards']):.2f}")
+        print(f"  Status: ❌ Deleted (no longer in memory)")
+    
+    if main_buffer_stats['samples'] > 0:
+        print(f"\nMain Phase (Episodes {warmup_episodes}-{n_episodes-1}):")
+        print(f"  Total samples: {main_buffer_stats['samples']}")
+        if main_buffer_stats['rewards']:
+            print(f"  Avg reward: {np.mean(main_buffer_stats['rewards']):.2f}")
+            print(f"  Reward range: [{np.min(main_buffer_stats['rewards']):.2f}, {np.max(main_buffer_stats['rewards']):.2f}]")
+        if main_buffer_stats['doses']:
+            print(f"  Avg propofol dose: {np.mean(main_buffer_stats['doses']):.2f} mg/kg/h")
+        print(f"  Status: ✓ Active (in agent's memory)")
+    print("="*70 + "\n")
     
     # Print debug information for first 3 episodes
     if debug_episodes:

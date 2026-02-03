@@ -79,7 +79,6 @@ class VitalDBLoader:
         available_cases = []
         
         # Check first N cases
-        # Dual drug needs more data, so scan more cases
         max_check = min(15000, len(ppf_cases))  # Scan up to 15000 cases to find more valid data
         check_cases = ppf_cases[:max_check]
         
@@ -269,7 +268,8 @@ class VitalDBLoader:
         bis_range: Optional[Tuple[float, float]] = None,
         min_duration: int = 1800,
         save_path: Optional[str] = None,
-        action_max: float = 30.0  # Match environment action_space (mg/kg/h)
+        action_max: float = 12.0,  # Match clinical maximum propofol rate (mg/kg/h)
+        sampling_interval: int = 60  # Sample every Nth second (1=all data, 60=98.3% reduction)
     ) -> Dict[str, np.ndarray]:
         """
         Prepare training data for model-based QRL.
@@ -280,6 +280,7 @@ class VitalDBLoader:
             min_duration: Minimum case duration in seconds
             save_path: Path to save prepared data
             action_max: Maximum action scale (for normalization to [0, 1])
+            sampling_interval: Sample every Nth second (1=all data, 60=98.3% reduction)
             
         Returns:
             Dictionary with states, actions, rewards, next_states, dones
@@ -291,6 +292,7 @@ class VitalDBLoader:
         print(f"  Target cases: {n_cases}")
         print(f"  BIS range: {bis_range}")
         print(f"  Min duration: {min_duration}s")
+        print(f"  Sampling interval: {sampling_interval}s ({'all data' if sampling_interval == 1 else f'{100 * (1 - 1/sampling_interval):.0f}% data reduction'})")
         
         # Get available cases
         case_ids = self.get_available_cases(min_duration=min_duration)
@@ -330,6 +332,10 @@ class VitalDBLoader:
             
             # Extract transitions
             for i in range(len(df_filtered) - 1):
+                # Apply subsampling: only process every Nth row
+                if i % sampling_interval != 0:
+                    continue
+                
                 try:
                     # State at time t
                     state = self._extract_state(df_filtered, i)
@@ -351,7 +357,7 @@ class VitalDBLoader:
                     if np.any(np.isnan(state)) or np.any(np.isnan(next_state)) or np.isnan(action):
                         continue
                     
-                    if action < 0 or action > 30:  # Unrealistic propofol rates
+                    if action < 0 or action > 12:  # Clinical maximum propofol rate (mg/kg/h)
                         continue
                     
                     states_list.append(state)
@@ -605,7 +611,7 @@ class VitalDBLoader:
         n_cases: int = 100,
         bis_range: Optional[Tuple[float, float]] = None,
         min_duration: int = 1800,
-        sampling_interval: int = 1,
+        sampling_interval: int = 60,
         save_path: Optional[str] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -784,10 +790,10 @@ class VitalDBLoader:
         dones = np.array(dones_list, dtype=np.bool_)
         
         # Normalize actions to [0, 1] range
-        # Propofol: 0-30 mg/kg/h → [0, 1]
-        # Remifentanil: 0-50 μg/kg/min → [0, 1]
-        PPF_MAX = 30.0   # mg/kg/h (typical max)
-        RFTN_MAX = 50.0  # μg/kg/min (typical max)
+        # Propofol: 0-12 mg/kg/h → [0, 1]
+        # Remifentanil: 0-2 μg/kg/min → [0, 1]
+        PPF_MAX = 12.0   # mg/kg/h (typical max)
+        RFTN_MAX = 2.0  # μg/kg/min (typical max)
         
         actions = actions_raw.copy()
         actions[:, 0] = actions_raw[:, 0] / PPF_MAX   # Normalize propofol
@@ -944,8 +950,13 @@ class VitalDBLoader:
         
         # [6-7] Cumulative doses (last 6 time steps = 1 min at 10s interval)
         start_idx = max(0, idx - 6)
-        ppf_acc = df.iloc[start_idx:idx+1]['PPF20_RATE'].sum()
-        rftn_acc = df.iloc[start_idx:idx+1]['RFTN_RATE'].fillna(0).sum()
+        # Convert rate × time to actual dose:
+        # PPF20_RATE is in mg/kg/h → multiply by (10s / 3600s/h) to get mg/kg
+        # RFTN_RATE is in μg/kg/min → multiply by (10s / 60s/min) to get μg/kg
+        timestep_hours = 10.0 / 3600.0  # 10 seconds in hours
+        timestep_minutes = 10.0 / 60.0  # 10 seconds in minutes
+        ppf_acc = df.iloc[start_idx:idx+1]['PPF20_RATE'].sum() * timestep_hours  # mg/kg
+        rftn_acc = df.iloc[start_idx:idx+1]['RFTN_RATE'].fillna(0).sum() * timestep_minutes  # μg/kg
         
         # [8] BIS slope (last 18 time steps = 3 min)
         if idx >= 18:

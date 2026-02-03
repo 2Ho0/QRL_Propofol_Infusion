@@ -228,10 +228,10 @@ training:
   
   # Exploration (for DDPG)
   noise_type: "ou"            # "ou" (Ornstein-Uhlenbeck) or "gaussian"
-  noise_sigma: 0.2            # Noise standard deviation
+  noise_sigma: 0.05           # Noise standard deviation (reduced for dual drug stability)
   noise_theta: 0.15           # OU noise theta
   noise_decay: 0.995          # Noise decay per episode
-  noise_min: 0.01             # Minimum noise
+  noise_min: 0.005            # Minimum noise (reduced for stable convergence)
   
   # Update Frequency
   update_every: 1             # Update networks every N steps

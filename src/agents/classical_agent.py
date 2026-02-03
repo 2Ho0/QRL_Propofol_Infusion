@@ -102,11 +102,14 @@ class MLPActor(nn.Module):
         output_layer = nn.Linear(prev_dim, output_dim)
         
         # Initialize bias to match VitalDB data distribution
-        # VitalDB typical normalized actions: 0.3-0.5 (60-100 μg/kg/min)
-        # sigmoid(0.0) = 0.5 (good starting point for BC)
-        # For BC-only training, start near data mean
+        # For dual drug with induction phase:
+        #   - Combined data mean: ~0.5 (induction + maintenance mixed)
+        #   - Induction mean: ~0.75 for propofol, ~0.6 for remifentanil
+        #   - Maintenance mean: ~0.05 for both drugs
+        # Use sigmoid(0) = 0.5 as starting point for better learning
+        # This allows the network to easily adjust up (induction) or down (maintenance)
         nn.init.xavier_uniform_(output_layer.weight)
-        nn.init.constant_(output_layer.bias, -1.0)
+        nn.init.constant_(output_layer.bias, 0.0)  # sigmoid(0) = 0.5
         
         layers.append(output_layer)
         layers.append(nn.Sigmoid())
@@ -431,8 +434,8 @@ class ClassicalDDPGAgent:
         if hasattr(action, '__len__') and len(action) == 2:
             # Dual drug: [propofol, remifentanil]
             action_scaled = np.array([
-                action[0] * 30.0,  # Propofol [0-1] → [0-30 mg/kg/h]
-                action[1] * 1.0    # Remifentanil [0-1] → [0-1.0 μg/kg/min]
+                action[0] * 12.0,  # Propofol [0-1] → [0-12 mg/kg/h]
+                action[1] * 2.0    # Remifentanil [0-1] → [0-2.0 μg/kg/min]
             ])
         else:
             # Single drug
@@ -466,8 +469,8 @@ class ClassicalDDPGAgent:
         if hasattr(action, '__len__') and len(action) == 2:
             # Dual drug: [propofol mg/kg/h, remifentanil μg/kg/min]
             action_normalized = np.array([
-                action[0] / 30.0,  # Propofol [0-30] → [0-1]
-                action[1] / 1.0    # Remifentanil [0-1.0] → [0-1]
+                action[0] / 12.0,  # Propofol [0-12] → [0-1]
+                action[1] / 2.0    # Remifentanil [0-2.0] → [0-1]
             ])
         else:
             # Single drug

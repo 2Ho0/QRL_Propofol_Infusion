@@ -210,12 +210,12 @@ class DualDrugEnv(gym.Env):
             np.random.seed(seed)
         
         # Action space: [propofol_rate, remifentanil_rate]
-        # Ranges match VitalDB data:
-        # - Propofol: 0-30 mg/kg/h (typical: 4-12, max observed ~20)
-        # - Remifentanil: 0-1.0 μg/kg/min (typical: 0.05-0.3, max observed ~0.9)
+        # Ranges match clinical guidelines:
+        # - Propofol: 0-12 mg/kg/h (typical maintenance: 4-12, clinical maximum: 12)
+        # - Remifentanil: 0-2.0 μg/kg/min (typical: 0.05-0.3, surgical maximum: 0.5-2)
         self.action_space = spaces.Box(
             low=np.array([0.0, 0.0]),
-            high=np.array([30.0, 1.0]),  # [mg/kg/h, μg/kg/min]
+            high=np.array([12.0, 2.0]),  # [mg/kg/h, μg/kg/min]
             dtype=np.float32
         )
         

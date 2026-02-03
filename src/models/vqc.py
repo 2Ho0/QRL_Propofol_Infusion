@@ -106,16 +106,43 @@ class JAXCircuitFunction(torch.autograd.Function):
         
         # Execute gradient computation on GPU
         with jax.default_device(jax.devices('gpu')[0]):
-            # Define function to differentiate
-            def loss_fn(inputs_jax, weights_jax):
-                return circuit_fn(inputs_jax, weights_jax)
+            # For multi-output circuits, compute gradients for each output separately
+            # and combine with chain rule using grad_output
+            def scalar_loss_fn(inputs_jax, weights_jax, output_idx):
+                """Extract single output for gradient computation."""
+                outputs = circuit_fn(inputs_jax, weights_jax)
+                # Convert list to array if needed
+                if isinstance(outputs, list):
+                    outputs = jnp.array(outputs)
+                return outputs[output_idx]
             
-            # Compute gradients using JAX
-            grad_fn = jax.grad(loss_fn, argnums=(0, 1))
-            grads_jax = grad_fn(inputs_jax, weights_jax)
+            # Determine number of outputs
+            test_output = circuit_fn(inputs_jax, weights_jax)
+            if isinstance(test_output, list):
+                n_outputs = len(test_output)
+            else:
+                n_outputs = test_output.shape[0] if test_output.ndim > 0 else 1
+            
+            # Accumulate gradients weighted by grad_output
+            grad_inputs_jax = jnp.zeros_like(inputs_jax)
+            grad_weights_jax = jnp.zeros_like(weights_jax)
+            
+            grad_output_np = grad_output.detach().cpu().numpy()
+            if grad_output_np.ndim == 0:
+                grad_output_weights = jnp.array([grad_output_np] * n_outputs)
+            else:
+                grad_output_weights = jnp.array(grad_output_np)
+            
+            for i in range(n_outputs):
+                # Compute gradient for this output
+                grad_fn = jax.grad(lambda inp, w: scalar_loss_fn(inp, w, i), argnums=(0, 1))
+                g_inp, g_w = grad_fn(inputs_jax, weights_jax)
+                
+                # Weight by upstream gradient
+                grad_inputs_jax = grad_inputs_jax + g_inp * grad_output_weights[i]
+                grad_weights_jax = grad_weights_jax + g_w * grad_output_weights[i]
             
             # Convert gradients back to numpy (make writable copies)
-            grad_inputs_jax, grad_weights_jax = grads_jax
             grad_inputs_np = np.asarray(grad_inputs_jax).copy()
             grad_weights_np = np.asarray(grad_weights_jax).copy()
         
@@ -126,16 +153,6 @@ class JAXCircuitFunction(torch.autograd.Function):
         if inputs.is_cuda:
             grad_inputs = grad_inputs.to(inputs.device)
             grad_weights = grad_weights.to(inputs.device)
-        
-        # Scale by upstream gradient
-        grad_output_np = grad_output.detach().cpu().numpy()
-        if grad_output.numel() == 1:
-            grad_inputs = grad_inputs * grad_output.item()
-            grad_weights = grad_weights * grad_output.item()
-        else:
-            # Handle batch case
-            grad_inputs = grad_inputs * grad_output.unsqueeze(-1)
-            grad_weights = grad_weights * grad_output.mean()
         
         return None, grad_inputs, grad_weights
 
@@ -180,22 +197,40 @@ class JAXCircuitBatchFunction(torch.autograd.Function):
         inputs_jax = ctx.inputs_jax
         weights_jax = ctx.weights_jax
         
+        batch_size = inputs.shape[0]
+        
         # Execute gradient computation on GPU
         with jax.default_device(jax.devices('gpu')[0]):
-            # Define vectorized gradient function
-            def single_circuit(input_single):
-                return circuit_batch_fn(input_single.reshape(1, -1), weights_jax)[0]
+            # For multi-output circuits, we need to handle gradients for each output
+            def single_sample_loss(input_single, output_grad_single):
+                """Compute loss for single sample with gradient weighting."""
+                outputs = circuit_batch_fn(input_single.reshape(1, -1), weights_jax)[0]
+                # Convert list to array if needed
+                if isinstance(outputs, list):
+                    outputs = jnp.array(outputs)
+                # Weighted sum by upstream gradient
+                return jnp.sum(outputs * output_grad_single)
+            
+            # Convert grad_output to JAX
+            grad_output_jax = jnp.array(grad_output.detach().cpu().numpy())
             
             # Compute gradients for each sample using vmap
-            grad_fn = jax.grad(single_circuit)
-            grad_inputs_jax = vmap(grad_fn)(inputs_jax)
+            grad_fn = jax.grad(single_sample_loss, argnums=0)
+            grad_inputs_jax = vmap(grad_fn)(inputs_jax, grad_output_jax)
             
-            # Gradient w.r.t weights (averaged over batch)
-            def loss_fn(weights_jax):
+            # Gradient w.r.t weights (sum over batch)
+            def batch_loss_fn(weights_jax):
                 outputs = circuit_batch_fn(inputs_jax, weights_jax)
-                return jnp.mean(outputs)
+                # Convert list outputs to array
+                if isinstance(outputs, list):
+                    outputs = jnp.stack(outputs)
+                elif outputs.ndim == 1:
+                    # Single output per sample, expand dims
+                    outputs = outputs[:, None]
+                # Weight by upstream gradient and sum
+                return jnp.sum(outputs * grad_output_jax)
             
-            grad_weights_jax = jax.grad(loss_fn)(weights_jax)
+            grad_weights_jax = jax.grad(batch_loss_fn)(weights_jax)
             
             # Convert to numpy (make writable copies)
             grad_inputs_np = np.asarray(grad_inputs_jax).copy()
@@ -208,32 +243,6 @@ class JAXCircuitBatchFunction(torch.autograd.Function):
         if inputs.is_cuda:
             grad_inputs = grad_inputs.to(inputs.device)
             grad_weights = grad_weights.to(inputs.device)
-        
-        # Scale by upstream gradient
-        grad_output_np = grad_output.detach().cpu().numpy()
-        grad_inputs = grad_inputs * grad_output.unsqueeze(-1)
-        grad_weights = grad_weights * grad_output.sum()
-        
-        return None, grad_inputs, grad_weights
-        
-        # Gradient w.r.t weights (averaged over batch)
-        def loss_fn(weights_jax):
-            outputs = circuit_batch_fn(inputs_jax, weights_jax)
-            return jnp.mean(outputs)
-        
-        grad_weights_jax = jax.grad(loss_fn)(weights_jax)
-        
-        # Convert to PyTorch
-        grad_inputs = torch.from_numpy(np.array(grad_inputs_jax)).float()
-        grad_weights = torch.from_numpy(np.array(grad_weights_jax)).float()
-        
-        if inputs.is_cuda:
-            grad_inputs = grad_inputs.to(inputs.device)
-            grad_weights = grad_weights.to(inputs.device)
-        
-        # Scale by upstream gradient
-        grad_inputs = grad_inputs * grad_output.unsqueeze(-1)
-        grad_weights = grad_weights * grad_output.sum()
         
         return None, grad_inputs, grad_weights
 
@@ -333,8 +342,9 @@ class VariationalQuantumCircuit:
                 if self.n_qubits > 1:
                     qml.CNOT(wires=[self.n_qubits - 1, 0])
             
-            # Measurement: expectation value of Z on first qubit
-            return qml.expval(qml.PauliZ(0))
+            # Measurement: expectation values of Z on ALL qubits for multi-action output
+            # Returns [expval(Z_0), expval(Z_1), ...] for n_qubits
+            return [qml.expval(qml.PauliZ(i)) for i in range(self.n_qubits)]
         
         # JIT compile the circuit for faster execution
         self.circuit = jit(circuit)
@@ -387,13 +397,6 @@ class VariationalQuantumCircuit:
         """
         Draw the quantum circuit.
         
-        ArConvert to JAX arrays
-        inputs_jax = jnp.array(inputs)
-        weights_jax = jnp.array(weights)
-        
-        # Use qml.draw with JAX arrays
-        drawer = qml.draw(self.circuit)
-        return drawer(inputs_jax, weights_jax
         Returns:
             String representation of the circuit
         """
@@ -402,9 +405,13 @@ class VariationalQuantumCircuit:
         
         weights = self.get_initial_weights().detach().numpy()
         
+        # Convert to JAX arrays for circuit drawing
+        inputs_jax = jnp.array(inputs, dtype=jnp.float32)
+        weights_jax = jnp.array(weights, dtype=jnp.float32)
+        
         # Use qml.draw
         drawer = qml.draw(self.circuit)
-        return drawer(torch.tensor(inputs), torch.tensor(weights))
+        return drawer(inputs_jax, weights_jax)
 
 
 class QuantumPolicy(nn.Module):
@@ -484,18 +491,20 @@ class QuantumPolicy(nn.Module):
             torch.rand(n_layers, n_qubits, 2) * 2 * np.pi
         )
         
-        # Output scaling layer
-        output_layer = nn.Linear(16, self.action_dim)
+        # Output scaling layer - direct mapping from n_qubits measurements to actions
+        # VQC outputs n_qubits values in [-1, 1], map to [0, 1] for each action
+        output_layer = nn.Linear(n_qubits, self.action_dim)
         
         # Initialize bias to match VitalDB data distribution
-        # VitalDB normalized action mean: ~0.025 (5 μg/kg/min out of 200 max)
-        # sigmoid(x) = 0.025 => x = log(0.025/0.975) ≈ -3.66
-        # Start conservative to match expert data distribution
-        nn.init.constant_(output_layer.bias, -3.5)  # sigmoid(-3.5) ≈ 0.029
+        # For dual drug with induction phase:
+        #   - Combined data mean: ~0.5 (induction + maintenance mixed)
+        #   - Induction mean: ~0.75 for propofol, ~0.6 for remifentanil
+        #   - Maintenance mean: ~0.05 for both drugs
+        # Use sigmoid(0) = 0.5 as starting point for better learning
+        # This allows the network to easily adjust up (induction) or down (maintenance)
+        nn.init.constant_(output_layer.bias, 0.0)  # sigmoid(0) = 0.5
         
         self.output_scale = nn.Sequential(
-            nn.Linear(1, 16),
-            nn.ReLU(),
             output_layer,
             nn.Sigmoid()  # Output in [0, 1]
         )
@@ -523,23 +532,22 @@ class QuantumPolicy(nn.Module):
         encoded = self.encoder(state)  # [batch_size, n_qubits]
         
         # Pass through VQC
-        # VQC expects inputs in range suitable for angle encoding
+        # VQC now returns [n_qubits] expectation values for each sample
         vqc_outputs = []
         for i in range(batch_size):
-            output = self.vqc.forward(encoded[i], self.weights)
+            output = self.vqc.forward(encoded[i], self.weights)  # Returns [n_qubits] measurements
             vqc_outputs.append(output)
         
-        vqc_output = torch.stack(vqc_outputs)  # [batch_size]
+        vqc_output = torch.stack(vqc_outputs)  # [batch_size, n_qubits]
         
-        # Scale VQC output [-1, 1] to action through output layer
-        # First normalize to [0, 1]
-        normalized = (vqc_output + 1) / 2  # [batch_size]
+        # Normalize VQC output from [-1, 1] to [0, 1]
+        normalized = (vqc_output + 1) / 2  # [batch_size, n_qubits]
         
         # Convert to float32 to match network dtype
         normalized = normalized.float()
         
-        # Apply output scaling network
-        action = self.output_scale(normalized.unsqueeze(-1)) * self.action_scale  # [batch_size, action_dim]
+        # Apply output scaling network: [batch_size, n_qubits] -> [batch_size, action_dim]
+        action = self.output_scale(normalized) * self.action_scale  # [batch_size, action_dim]
         
         if squeeze_output:
             action = action.squeeze(0)
@@ -596,6 +604,7 @@ class QuantumPolicySimple(nn.Module):
         n_qubits: int = 2,
         n_layers: int = 4,
         action_scale: float = 1.0,
+        action_dim: int = 1,
         feature_indices: List[int] = [0, 1],
         device_name: str = "default.qubit",
         seed: Optional[int] = None
@@ -607,6 +616,7 @@ class QuantumPolicySimple(nn.Module):
             n_qubits: Number of qubits
             n_layers: Number of VQC layers
             action_scale: Scale for output action
+            action_dim: Dimension of action output
             feature_indices: Which state features to encode
             device_name: PennyLane device
             seed: Random seed
@@ -616,6 +626,7 @@ class QuantumPolicySimple(nn.Module):
         self.n_qubits = n_qubits
         self.n_layers = n_layers
         self.action_scale = action_scale
+        self.action_dim = action_dim
         self.feature_indices = feature_indices
         
         # VQC
@@ -660,14 +671,18 @@ class QuantumPolicySimple(nn.Module):
         # Pass through VQC
         vqc_outputs = []
         for i in range(batch_size):
-            output = self.vqc.forward(features[i], self.weights)
+            output = self.vqc.forward(features[i], self.weights)  # Returns [n_qubits] measurements
             vqc_outputs.append(output)
         
-        vqc_output = torch.stack(vqc_outputs)  # [batch_size]
+        vqc_output = torch.stack(vqc_outputs)  # [batch_size, n_qubits]
         
         # Map [-1, 1] to [0, action_scale]
-        action = ((vqc_output + 1) / 2) * self.action_scale
-        action = action.unsqueeze(-1)  # [batch_size, 1]
+        # Take mean of all qubit measurements for single action, or map to multi-action
+        if self.action_dim == 1:
+            action = ((vqc_output.mean(dim=1, keepdim=True) + 1) / 2) * self.action_scale
+        else:
+            # For multi-action, use first action_dim qubits
+            action = ((vqc_output[:, :self.action_dim] + 1) / 2) * self.action_scale
         
         if squeeze_output:
             action = action.squeeze(0)
@@ -687,7 +702,8 @@ if __name__ == "__main__":
     inputs = torch.tensor([0.5, -0.3])
     weights = vqc.get_initial_weights()
     output = vqc.forward(inputs, weights)
-    print(f"VQC output: {output.item():.4f}")
+    print(f"VQC output shape: {output.shape}")
+    print(f"VQC output: {output}")
     
     # Draw circuit
     print("\nQuantum Circuit:")

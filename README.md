@@ -12,6 +12,21 @@ Hybrid Quantum-Classical RL system for closed-loop BIS-guided propofol anesthesi
 - **Temporal Encoders**: LSTM and Transformer for time-series processing
 - **Clinical Metrics**: MDPE, MDAPE, Wobble for performance evaluation
 
+## 🚧 Current Progress & Extensions
+
+### Neural PK/PD System Identification
+We are extending the project to include a **Neural PK/PD** module that learns patient-specific pharmacokinetics and pharmacodynamics in real-time.
+- **Goal**: Adaptive control based on personalized patient physiology, moving beyond fixed population models (Schnider/Minto).
+- **Features**: 
+    - Real-time parameter estimation
+    - integration with VitalDB for training
+    - Support for additional vital signs (HR, MAP, SEF, SQI, SR)
+
+### Ongoing Improvements
+- **VitalDB Loader**: Enhanced to support multi-modal data loading (EEG + Vitals).
+- **Quantum Agent**: Refining the comparison between Quantum and Classical DDPG/PPO agents.
+
+
 ## 📊 System Architecture
 
 ```

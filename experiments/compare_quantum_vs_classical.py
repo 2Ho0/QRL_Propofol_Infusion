@@ -55,6 +55,8 @@ from environment.patient_simulator import create_patient_population
 from data.vitaldb_loader import VitalDBLoader
 from data.vitaldb_loader_remi import prepare_training_data_with_remi
 from train_hybrid import stage1_offline_pretraining, stage2_online_finetuning
+from evaluation.clinical_metrics import evaluate_episode, ClinicalMetrics
+from visualization.clinical_plots import plot_comparison, plot_radar_chart, plot_poincare
 
 
 def parse_args():
@@ -154,6 +156,9 @@ def evaluate_agent_on_simulator(
     patients = create_patient_population(n_patients=n_episodes, seed=seed)
     
     mdapes = []
+    wobbles = []
+    divergences = []
+    global_scores = []
     rewards_total = []
     propofol_usage = []
     remifentanil_usage = []
@@ -220,28 +225,28 @@ def evaluate_agent_on_simulator(
             if done or truncated:
                 break
         
-        # Get metrics if available
-        if hasattr(env, 'get_episode_metrics'):
-            metrics = env.get_episode_metrics()
-            mdapes.append(metrics.get('mdape', 0))
-        else:
-            # Calculate MDAPE manually from BIS error if metrics not available
-            if bis_history:
-                bis_array = np.array(bis_history)
-                target_bis = 50
-                mdape = np.mean(np.abs(bis_array - target_bis) / target_bis) * 100
-                mdapes.append(mdape)
-            else:
-                mdapes.append(0)
+        # Calculate metrics using ClinicalMetrics
+        bis_arr = np.array(bis_history)
+        ppf_arr = np.array(episode_ppf)
         
+        clinical_metrics = evaluate_episode(
+            bis_history=bis_arr,
+            drug_history=ppf_arr,
+            reward_history=np.array(rewards_history),
+            target_bis=50.0,
+            threshold=5.0,
+            patient_weight=patient.weight
+        )
+        
+        mdapes.append(clinical_metrics.mdape)
+        wobbles.append(clinical_metrics.wobble)
+        divergences.append(clinical_metrics.divergence)
+        global_scores.append(clinical_metrics.global_score)
+        
+        time_in_target.append(clinical_metrics.time_in_target)
         rewards_total.append(episode_reward)
         propofol_usage.append(np.mean(episode_ppf))
         remifentanil_usage.append(np.mean(episode_rftn))
-        
-        # Calculate time in target (BIS 45-55)
-        bis_array = np.array(bis_history)
-        tit = np.sum((bis_array >= 45) & (bis_array <= 55)) / len(bis_array) * 100
-        time_in_target.append(tit)
         
         # Save episode trajectory
         if save_trajectories:
@@ -252,23 +257,44 @@ def evaluate_agent_on_simulator(
                 'action': np.array(actions_history),
                 'reward': np.array(rewards_history),
                 'mdape': mdapes[-1] if mdapes else 0,
+                'wobble': wobbles[-1] if wobbles else 0,
+                'divergence': divergences[-1] if divergences else 0,
+                'global_score': global_scores[-1] if global_scores else 0,
                 'total_reward': episode_reward,
-                'time_in_target': tit
+                'time_in_target': clinical_metrics.time_in_target,
+                'propofol': np.array(episode_ppf),
+                'remifentanil': np.array(episode_rftn)
             })
     
     result = {
         'mdape_mean': np.mean(mdapes),
         'mdape_std': np.std(mdapes),
         'mdape_list': mdapes,
+        
+        'wobble_mean': np.mean(wobbles),
+        'wobble_std': np.std(wobbles),
+        'wobble_list': wobbles,
+        
+        'divergence_mean': np.mean(divergences),
+        'divergence_std': np.std(divergences),
+        'divergence_list': divergences,
+        
+        'global_score_mean': np.mean(global_scores),
+        'global_score_std': np.std(global_scores),
+        'global_score_list': global_scores,
+        
         'reward_mean': np.mean(rewards_total),
         'reward_std': np.std(rewards_total),
         'reward_list': rewards_total,
+        
         'propofol_usage_mean': np.mean(propofol_usage),
         'propofol_usage_std': np.std(propofol_usage),
         'propofol_usage_list': propofol_usage,
+        
         'remifentanil_usage_mean': np.mean(remifentanil_usage),
         'remifentanil_usage_std': np.std(remifentanil_usage),
         'remifentanil_usage_list': remifentanil_usage,
+        
         'time_in_target_mean': np.mean(time_in_target),
         'time_in_target_std': np.std(time_in_target),
         'time_in_target_list': time_in_target
@@ -289,7 +315,10 @@ def save_trajectories_to_csv(trajectories: List[Dict], save_dir: Path, agent_nam
     for traj in trajectories:
         summary_data.append({
             'episode': traj['episode'],
-            'mdape': traj['mdape'],
+            'mdape': traj.get('mdape', 0),
+            'wobble': traj.get('wobble', 0),
+            'divergence': traj.get('divergence', 0),
+            'global_score': traj.get('global_score', 0),
             'total_reward': traj['total_reward'],
             'time_in_target': traj['time_in_target'],
             'duration': len(traj['time'])
@@ -305,7 +334,8 @@ def save_trajectories_to_csv(trajectories: List[Dict], save_dir: Path, agent_nam
         episode_data = pd.DataFrame({
             'time': traj['time'],
             'bis': traj['bis'],
-            'action': traj['action'],
+            'propofol': traj['propofol'] if 'propofol' in traj else traj['action'],
+            'remifentanil': traj['remifentanil'] if 'remifentanil' in traj else np.zeros_like(traj['time']),
             'reward': traj['reward']
         })
         episode_path = save_dir / f"{agent_name}_episode_{traj['episode']:03d}.csv"
@@ -352,7 +382,7 @@ def plot_bis_trajectories(trajectories: List[Dict], save_path: Path, agent_name:
         ax.plot(traj['time'], traj['action'], label=label, alpha=0.7, linewidth=2)
     
     ax.set_xlabel('Time (min)', fontsize=12)
-    ax.set_ylabel('Propofol Infusion Rate (μg/kg/min)', fontsize=12)
+    ax.set_ylabel('Propofol Infusion Rate (mg/kg/h)', fontsize=12)
     ax.set_title(f'{agent_name} - Control Actions Over Time', fontsize=14, fontweight='bold')
     ax.legend(loc='best', fontsize=9)
     ax.grid(alpha=0.3)
@@ -517,168 +547,6 @@ def statistical_comparison(quantum_results: Dict, classical_results: Dict,
     }
 
 
-def plot_comparison(
-    quantum_results: Dict, 
-    classical_results: Dict, 
-    title: str, 
-    save_path: Path
-):
-    """Generate comparison plots for dual drug control."""
-    fig, axes = plt.subplots(3, 3, figsize=(18, 15))
-    fig.suptitle(title, fontsize=16, fontweight='bold')
-    
-    use_boxplot = len(quantum_results['mdape_list']) >= 2
-    
-    # 1. MDAPE
-    ax = axes[0, 0]
-    if use_boxplot:
-        data = [quantum_results['mdape_list'], classical_results['mdape_list']]
-        bp = ax.boxplot(data, tick_labels=['Quantum', 'Classical'], patch_artist=True)
-        bp['boxes'][0].set_facecolor('lightblue')
-        bp['boxes'][1].set_facecolor('lightcoral')
-        ax.plot(1, quantum_results['mdape_mean'], 'D', color='blue', markersize=8, label='Mean')
-        ax.plot(2, classical_results['mdape_mean'], 'D', color='red', markersize=8)
-        ax.legend()
-    else:
-        x_pos = [1, 2]
-        means = [quantum_results['mdape_mean'], classical_results['mdape_mean']]
-        stds = [quantum_results['mdape_std'], classical_results['mdape_std']]
-        ax.bar(x_pos, means, yerr=stds, capsize=5, color=['lightblue', 'lightcoral'], alpha=0.7)
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(['Quantum', 'Classical'])
-    ax.set_ylabel('MDAPE (%)', fontsize=12)
-    ax.set_title('MDAPE Distribution', fontsize=13, fontweight='bold')
-    ax.grid(axis='y', alpha=0.3)
-    
-    # 2. Reward
-    ax = axes[0, 1]
-    if use_boxplot:
-        data = [quantum_results['reward_list'], classical_results['reward_list']]
-        bp = ax.boxplot(data, tick_labels=['Quantum', 'Classical'], patch_artist=True)
-        bp['boxes'][0].set_facecolor('lightblue')
-        bp['boxes'][1].set_facecolor('lightcoral')
-        ax.plot(1, quantum_results['reward_mean'], 'D', color='blue', markersize=8, label='Mean')
-        ax.plot(2, classical_results['reward_mean'], 'D', color='red', markersize=8)
-        ax.legend()
-    else:
-        x_pos = [1, 2]
-        means = [quantum_results['reward_mean'], classical_results['reward_mean']]
-        stds = [quantum_results['reward_std'], classical_results['reward_std']]
-        ax.bar(x_pos, means, yerr=stds, capsize=5, color=['lightblue', 'lightcoral'], alpha=0.7)
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(['Quantum', 'Classical'])
-    ax.set_ylabel('Total Reward', fontsize=12)
-    ax.set_title('Reward Distribution', fontsize=13, fontweight='bold')
-    ax.grid(axis='y', alpha=0.3)
-    
-    # 3. Propofol Usage
-    ax = axes[0, 2]
-    ppf_means = [quantum_results['propofol_usage_mean'], classical_results['propofol_usage_mean']]
-    ppf_stds = [quantum_results['propofol_usage_std'], classical_results['propofol_usage_std']]
-    x_pos = [1, 2]
-    ax.bar(x_pos, ppf_means, yerr=ppf_stds, capsize=5, color=['lightblue', 'lightcoral'], alpha=0.7)
-    ax.set_xticks(x_pos)
-    ax.set_xticklabels(['Quantum', 'Classical'])
-    ax.set_ylabel('Mean Propofol Rate (mg/kg/h)', fontsize=12)
-    ax.set_title('Propofol Usage', fontsize=13, fontweight='bold')
-    ax.grid(axis='y', alpha=0.3)
-    
-    # 4. MDAPE Histogram
-    ax = axes[1, 0]
-    if use_boxplot:
-        n_bins = min(20, len(quantum_results['mdape_list']))
-        ax.hist(quantum_results['mdape_list'], bins=n_bins, alpha=0.6, label='Quantum', color='blue')
-        ax.hist(classical_results['mdape_list'], bins=n_bins, alpha=0.6, label='Classical', color='red')
-        ax.axvline(quantum_results['mdape_mean'], color='blue', linestyle='--', linewidth=2)
-        ax.axvline(classical_results['mdape_mean'], color='red', linestyle='--', linewidth=2)
-        ax.legend()
-    else:
-        ax.scatter([quantum_results['mdape_mean']], [1], s=200, alpha=0.6, label='Quantum', color='blue')
-        ax.scatter([classical_results['mdape_mean']], [1], s=200, alpha=0.6, label='Classical', color='red')
-        ax.set_ylim(0, 2)
-        ax.legend()
-    ax.set_xlabel('MDAPE (%)', fontsize=12)
-    ax.set_ylabel('Frequency', fontsize=12)
-    ax.set_title('MDAPE Histogram', fontsize=13, fontweight='bold')
-    ax.grid(alpha=0.3)
-    
-    # 5. Cumulative Distribution
-    ax = axes[1, 1]
-    if use_boxplot:
-        quantum_sorted = np.sort(quantum_results['mdape_list'])
-        classical_sorted = np.sort(classical_results['mdape_list'])
-        quantum_cdf = np.arange(1, len(quantum_sorted) + 1) / len(quantum_sorted)
-        classical_cdf = np.arange(1, len(classical_sorted) + 1) / len(classical_sorted)
-        
-        ax.plot(quantum_sorted, quantum_cdf, label='Quantum', color='blue', linewidth=2)
-        ax.plot(classical_sorted, classical_cdf, label='Classical', color='red', linewidth=2)
-        ax.legend()
-    else:
-        ax.scatter([quantum_results['mdape_mean']], [1.0], s=200, label='Quantum', color='blue', marker='o')
-        ax.scatter([classical_results['mdape_mean']], [1.0], s=200, label='Classical', color='red', marker='s')
-        ax.set_ylim(0, 1.2)
-        ax.legend()
-    ax.set_xlabel('MDAPE (%)', fontsize=12)
-    ax.set_ylabel('Cumulative Probability', fontsize=12)
-    ax.set_title('Cumulative Distribution', fontsize=13, fontweight='bold')
-    ax.grid(alpha=0.3)
-    
-    # 6. Time in Target
-    ax = axes[1, 2]
-    tit_means = [quantum_results['time_in_target_mean'], classical_results['time_in_target_mean']]
-    tit_stds = [quantum_results['time_in_target_std'], classical_results['time_in_target_std']]
-    ax.bar(x_pos, tit_means, yerr=tit_stds, capsize=5, color=['lightblue', 'lightcoral'], alpha=0.7)
-    ax.set_xticks(x_pos)
-    ax.set_xticklabels(['Quantum', 'Classical'])
-    ax.set_ylabel('Time in Target (%)', fontsize=12)
-    ax.set_title('BIS Control (45-55)', fontsize=13, fontweight='bold')
-    ax.grid(axis='y', alpha=0.3)
-    
-    # 7. Remifentanil Usage
-    ax = axes[2, 0]
-    rftn_means = [quantum_results['remifentanil_usage_mean'], classical_results['remifentanil_usage_mean']]
-    rftn_stds = [quantum_results['remifentanil_usage_std'], classical_results['remifentanil_usage_std']]
-    ax.bar(x_pos, rftn_means, yerr=rftn_stds, capsize=5, color=['lightblue', 'lightcoral'], alpha=0.7)
-    ax.set_xticks(x_pos)
-    ax.set_xticklabels(['Quantum', 'Classical'])
-    ax.set_ylabel('Mean Remifentanil Rate (μg/kg/min)', fontsize=12)
-    ax.set_title('Remifentanil Usage', fontsize=13, fontweight='bold')
-    ax.grid(axis='y', alpha=0.3)
-    
-    # 8. Reward vs MDAPE Scatter
-    ax = axes[2, 1]
-    ax.scatter(quantum_results['mdape_list'], quantum_results['reward_list'], 
-              alpha=0.6, s=50, label='Quantum', color='blue')
-    ax.scatter(classical_results['mdape_list'], classical_results['reward_list'], 
-              alpha=0.6, s=50, label='Classical', color='red')
-    ax.set_xlabel('MDAPE (%)', fontsize=12)
-    ax.set_ylabel('Total Reward', fontsize=12)
-    ax.set_title('Reward vs MDAPE', fontsize=13, fontweight='bold')
-    ax.legend()
-    ax.grid(alpha=0.3)
-    
-    # 9. Drug Usage Comparison
-    ax = axes[2, 2]
-    width = 0.35
-    x = np.arange(2)
-    ppf_means_plot = [quantum_results['propofol_usage_mean'], classical_results['propofol_usage_mean']]
-    rftn_means_plot = [quantum_results['remifentanil_usage_mean'], classical_results['remifentanil_usage_mean']]
-    
-    ax.bar(x - width/2, ppf_means_plot, width, label='Propofol', color='skyblue', alpha=0.7)
-    ax.bar(x + width/2, rftn_means_plot, width, label='Remifentanil', color='salmon', alpha=0.7)
-    ax.set_xticks(x)
-    ax.set_xticklabels(['Quantum', 'Classical'])
-    ax.set_ylabel('Drug Usage', fontsize=12)
-    ax.set_title('Drug Usage Comparison', fontsize=13, fontweight='bold')
-    ax.legend()
-    ax.grid(axis='y', alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    print(f"✓ Plot saved to: {save_path}")
-    plt.close()
-
-
 def evaluate_on_vitaldb_test_set(
     agent,
     test_data: Tuple[np.ndarray, np.ndarray, np.ndarray],
@@ -700,14 +568,14 @@ def evaluate_on_vitaldb_test_set(
         
         # Normalize action back to [0,1] for comparison with VitalDB normalized actions
         if hasattr(action_physical, '__len__') and len(action_physical) == 2:
-            # Dual drug: denormalize back to [0,1]
+            # Dual drug: denormalize back to [0,1] (must match VitalDB PPF_MAX/RFTN_MAX)
             action_normalized = np.array([
-                action_physical[0] / 30.0,  # Propofol [0-30] → [0-1]
-                action_physical[1] / 1.0    # Remifentanil [0-1.0] → [0-1]
+                action_physical[0] / 12.0,  # Propofol [0-12] → [0-1] (matches vitaldb_loader PPF_MAX)
+                action_physical[1] / 2.0    # Remifentanil [0-2.0] → [0-1] (matches vitaldb_loader RFTN_MAX)
             ])
         else:
             # Single drug
-            action_normalized = action_physical / 30.0
+            action_normalized = action_physical / 12.0
         
         predicted_actions.append(action_normalized)
     
@@ -1227,11 +1095,62 @@ def main():
     print(f"\n" + "-"*70)
     print("GENERATING PLOTS")
     print("-"*70)
+    
+    results_map = {
+        'Classical': classical_sim_results,
+        'Quantum': quantum_sim_results
+    }
+    
+    # 1. Box Plot (MDAPE)
     plot_comparison(
-        quantum_sim_results, classical_sim_results,
-        'Dual Drug Control: Quantum vs Classical (Simulator)',
-        comparison_dir / 'comparison_simulator.png'
+        results_map, 
+        metric='mdape', 
+        plot_type='box',
+        title='MDAPE Distribution (Lower is Better)',
+        save_path=comparison_dir / 'comparison_mdape_box.png'
     )
+    
+    # 2. Box Plot (Wobble)
+    plot_comparison(
+        results_map, 
+        metric='wobble', 
+        plot_type='box',
+        title='Wobble Distribution (Lower is Better)',
+        save_path=comparison_dir / 'comparison_wobble_box.png'
+    )
+    
+    # 3. Box Plot (Global Score)
+    plot_comparison(
+        results_map, 
+        metric='global_score', 
+        plot_type='box',
+        title='Global Score (Lower is Better)',
+        save_path=comparison_dir / 'comparison_global_score_box.png'
+    )
+    
+    # 4. Radar Chart
+    radar_metrics = ['mdape', 'wobble', 'global_score', 'propofol_usage', 'time_in_target']
+    plot_radar_chart(
+        results_map,
+        metrics=radar_metrics,
+        title='Multi-Metric Comparison',
+        save_path=comparison_dir / 'comparison_radar.png'
+    )
+    
+    # 5. Poincaré Plots
+    if 'trajectories' in classical_sim_results and classical_sim_results['trajectories']:
+        plot_poincare(
+            classical_sim_results['trajectories'][0]['bis'],
+            title='Classical Agent Stability (Poincaré)',
+            save_path=comparison_dir / 'poincare_classical.png'
+        )
+            
+    if 'trajectories' in quantum_sim_results and quantum_sim_results['trajectories']:
+        plot_poincare(
+            quantum_sim_results['trajectories'][0]['bis'],
+            title='Quantum Agent Stability (Poincaré)',
+            save_path=comparison_dir / 'poincare_quantum.png'
+        )
     
     # Save results
     results = {
@@ -1277,8 +1196,20 @@ def main():
         f.write("SIMULATOR TEST RESULTS\n")
         f.write("-"*70 + "\n")
         f.write(f"MDAPE:\n")
-        f.write(f"  Classical: {classical_sim_results['mdape_mean']:.2f}%\n")
-        f.write(f"  Quantum:   {quantum_sim_results['mdape_mean']:.2f}%\n\n")
+        f.write(f"  Classical: {classical_sim_results['mdape_mean']:.2f}% ± {classical_sim_results['mdape_std']:.2f}%\n")
+        f.write(f"  Quantum:   {quantum_sim_results['mdape_mean']:.2f}% ± {quantum_sim_results['mdape_std']:.2f}%\n\n")
+        
+        f.write(f"Wobble:\n")
+        f.write(f"  Classical: {classical_sim_results['wobble_mean']:.2f} ± {classical_sim_results['wobble_std']:.2f}\n")
+        f.write(f"  Quantum:   {quantum_sim_results['wobble_mean']:.2f} ± {quantum_sim_results['wobble_std']:.2f}\n\n")
+        
+        f.write(f"Divergence:\n")
+        f.write(f"  Classical: {classical_sim_results['divergence_mean']:.4f}\n")
+        f.write(f"  Quantum:   {quantum_sim_results['divergence_mean']:.4f}\n\n")
+        
+        f.write(f"Global Score:\n")
+        f.write(f"  Classical: {classical_sim_results['global_score_mean']:.2f}\n")
+        f.write(f"  Quantum:   {quantum_sim_results['global_score_mean']:.2f}\n\n")
         
         f.write(f"Reward:\n")
         f.write(f"  Classical: {classical_sim_results['reward_mean']:.2f}\n")

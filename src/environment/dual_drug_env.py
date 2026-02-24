@@ -491,8 +491,12 @@ class DualDrugEnv(gym.Env):
             r_track = -0.5 * min((e_bis - 10) / 40, 1.0)
         
         # R_safe: Safety reward
-        if self.bis < 30:
-            r_safe = -2.0 * ((30 - self.bis) / 30)
+        if self.bis < 20:
+            # Dangerously deep: very strong penalty (equivalent to sacrificing ~10 mins of perfect control)
+            r_safe = -20.0
+        elif self.bis < 30:
+            # Deep anesthesia warning: linear penalty from -5.0 to 0.0
+            r_safe = -5.0 * ((30 - self.bis) / 10)
         elif self.bis < 40:
             r_safe = -0.5 * ((40 - self.bis) / 10)
         elif self.bis <= 60:

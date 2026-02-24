@@ -128,27 +128,32 @@ class VitalDBLoader:
                 return pickle.load(f)
         
         try:
-            # Load multiple tracks using vitaldb.load_case
+            # Load ALL tracks in a single API call (data + demographics)
+            # This halves download time by avoiding a second API call for clinical data
             import vitaldb
             
             track_names = [
-                'BIS/BIS',                    # Bispectral Index
-                'Orchestra/PPF20_RATE',       # Propofol infusion rate (mL/hr)
-                'Orchestra/PPF20_CE',         # Propofol effect-site concentration (mcg/mL)
-                'Orchestra/PPF20_CP',         # Propofol plasma concentration (mcg/mL)
-                'Orchestra/RFTN20_RATE',      # Remifentanil infusion rate (mL/hr, 20 mcg/mL)
-                'Orchestra/RFTN20_CE',        # Remifentanil effect-site concentration (ng/mL)
-                'Orchestra/RFTN50_RATE',      # Remifentanil infusion rate (mL/hr, 50 mcg/mL)
-                'Orchestra/RFTN50_CE',        # Remifentanil effect-site concentration (ng/mL)
+                'BIS/BIS',                    # [0] Bispectral Index
+                'Orchestra/PPF20_RATE',       # [1] Propofol infusion rate (mL/hr)
+                'Orchestra/PPF20_CE',         # [2] Propofol effect-site concentration (mcg/mL)
+                'Orchestra/PPF20_CP',         # [3] Propofol plasma concentration (mcg/mL)
+                'Orchestra/RFTN20_RATE',      # [4] Remifentanil infusion rate (mL/hr, 20 mcg/mL)
+                'Orchestra/RFTN20_CE',        # [5] Remifentanil effect-site concentration (ng/mL)
+                'Orchestra/RFTN50_RATE',      # [6] Remifentanil infusion rate (mL/hr, 50 mcg/mL)
+                'Orchestra/RFTN50_CE',        # [7] Remifentanil effect-site concentration (ng/mL)
+                'Clinical/weight',            # [8] Patient weight (kg)
+                'Clinical/height',            # [9] Patient height (cm)
+                'Clinical/age',               # [10] Patient age (years)
+                'Clinical/sex',               # [11] Patient sex
             ]
             
-            # Load data
+            # Load data — single API call for all tracks
             data = vitaldb.load_case(caseid, track_names, interval)
             
             if data is None or len(data) == 0:
                 return None
             
-            # Create DataFrame
+            # Create DataFrame from time-series tracks (first 8 columns)
             track_short_names = ['BIS', 'PPF20_RATE', 'PPF20_CE', 'PPF20_CP', 
                                'RFTN20_RATE', 'RFTN20_CE', 'RFTN50_RATE', 'RFTN50_CE']
             
@@ -159,6 +164,36 @@ class VitalDBLoader:
             
             if 'BIS' not in df_dict or 'PPF20_RATE' not in df_dict:
                 return None
+            
+            # Extract demographics from the same data array (columns 8-11)
+            # Clinical tracks are constant values repeated across all rows
+            try:
+                patient_weight = float(data[0, 8]) if data.shape[1] > 8 and not np.isnan(data[0, 8]) else 70.0
+                patient_height = float(data[0, 9]) if data.shape[1] > 9 and not np.isnan(data[0, 9]) else 170.0
+                patient_age = float(data[0, 10]) if data.shape[1] > 10 and not np.isnan(data[0, 10]) else 50.0
+                patient_sex_raw = data[0, 11] if data.shape[1] > 11 else np.nan
+            except (IndexError, TypeError):
+                patient_weight = 70.0
+                patient_height = 170.0
+                patient_age = 50.0
+                patient_sex_raw = np.nan
+            
+            # Validate demographics
+            if patient_weight <= 0:
+                patient_weight = 70.0
+            if patient_height <= 0:
+                patient_height = 170.0
+            if patient_age <= 0:
+                patient_age = 50.0
+            
+            # Sex: VitalDB encodes as F=0, M=1 (numeric) or string
+            if pd.isna(patient_sex_raw):
+                patient_sex = 'M'
+            elif isinstance(patient_sex_raw, str):
+                patient_sex = patient_sex_raw if patient_sex_raw in ['M', 'F'] else 'M'
+            else:
+                # Numeric: 0=F, 1=M (VitalDB convention)
+                patient_sex = 'M' if float(patient_sex_raw) >= 0.5 else 'F'
             
             # Combine RFTN20 and RFTN50 into single RFTN columns (prefer RFTN20, fallback to RFTN50)
             # Store which concentration was used for later unit conversion
@@ -187,39 +222,6 @@ class VitalDBLoader:
                 df_dict['RFTN_CE'] = df_dict.get('RFTN50_CE', np.full(len(df_dict['RFTN50_RATE']), np.nan))
             
             df = pd.DataFrame(df_dict)
-            
-            # Get patient demographics for unit conversion and state representation
-            try:
-                clinical_tracks = ['Clinical/weight', 'Clinical/height', 'Clinical/age', 'Clinical/sex']
-                clinical_data = vitaldb.load_case(caseid, clinical_tracks, interval)
-                
-                if clinical_data is not None and len(clinical_data) > 0:
-                    patient_weight = clinical_data[0, 0]
-                    patient_height = clinical_data[0, 1] if clinical_data.shape[1] > 1 else 170.0
-                    patient_age = clinical_data[0, 2] if clinical_data.shape[1] > 2 else 50.0
-                    patient_sex = clinical_data[0, 3] if clinical_data.shape[1] > 3 else 'M'
-                    
-                    # Validate and set defaults
-                    if np.isnan(patient_weight) or patient_weight <= 0:
-                        patient_weight = 70.0
-                    if np.isnan(patient_height) or patient_height <= 0:
-                        patient_height = 170.0
-                    if np.isnan(patient_age) or patient_age <= 0:
-                        patient_age = 50.0
-                    if pd.isna(patient_sex) or patient_sex not in ['M', 'F']:
-                        patient_sex = 'M'
-                else:
-                    # Default values
-                    patient_weight = 70.0
-                    patient_height = 170.0
-                    patient_age = 50.0
-                    patient_sex = 'M'
-            except:
-                # Default values if loading fails
-                patient_weight = 70.0
-                patient_height = 170.0
-                patient_age = 50.0
-                patient_sex = 'M'
             
             # Compute BMI
             height_m = patient_height / 100.0

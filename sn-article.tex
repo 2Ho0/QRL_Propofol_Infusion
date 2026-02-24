@@ -1,0 +1,625 @@
+%Version 3.1 December 2024
+% See section 11 of the User Manual for version history
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%                                                                 %%
+%% Please do not use \input{...} to include other tex files.       %%
+%% Submit your LaTeX manuscript as one .tex document.              %%
+%%                                                                 %%
+%% All additional figures and files should be attached             %%
+%% separately and not embedded in the \TeX\ document itself.       %%
+%%                                                                 %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%\documentclass[referee,sn-basic]{sn-jnl}% referee option is meant for double line spacing
+
+%%=======================================================%%
+%% to print line numbers in the margin use lineno option %%
+%%=======================================================%%
+
+%%\documentclass[lineno,pdflatex,sn-basic]{sn-jnl}% Basic Springer Nature Reference Style/Chemistry Reference Style
+
+%%=========================================================================================%%
+%% the documentclass is set to pdflatex as default. You can delete it if not appropriate.  %%
+%%=========================================================================================%%
+
+%%\documentclass[sn-basic]{sn-jnl}% Basic Springer Nature Reference Style/Chemistry Reference Style
+
+%%Note: the following reference styles support Namedate and Numbered referencing. By default the style follows the most common style. To switch between the options you can add or remove Numbered in the optional parenthesis. 
+%%The option is available for: sn-basic.bst, sn-chicago.bst%  
+ 
+%%\documentclass[pdflatex,sn-nature]{sn-jnl}% Style for submissions to Nature Portfolio journals
+%%\documentclass[pdflatex,sn-basic]{sn-jnl}% Basic Springer Nature Reference Style/Chemistry Reference Style
+\documentclass[pdflatex,sn-mathphys-num]{sn-jnl}% Math and Physical Sciences Numbered Reference Style
+%%\documentclass[pdflatex,sn-mathphys-ay]{sn-jnl}% Math and Physical Sciences Author Year Reference Style
+%%\documentclass[pdflatex,sn-aps]{sn-jnl}% American Physical Society (APS) Reference Style
+%%\documentclass[pdflatex,sn-vancouver-num]{sn-jnl}% Vancouver Numbered Reference Style
+%%\documentclass[pdflatex,sn-vancouver-ay]{sn-jnl}% Vancouver Author Year Reference Style
+%%\documentclass[pdflatex,sn-apa]{sn-jnl}% APA Reference Style
+%%\documentclass[pdflatex,sn-chicago]{sn-jnl}% Chicago-based Humanities Reference Style
+
+%%%% Standard Packages
+%%<additional latex packages if required can be included here>
+
+\usepackage{graphicx}%
+\usepackage{multirow}%
+\usepackage{amsmath,amssymb,amsfonts}%
+\usepackage{amsthm}%
+\usepackage{mathrsfs}%
+\usepackage[title]{appendix}%
+\usepackage{xcolor}%
+\usepackage{textcomp}%
+\usepackage{manyfoot}%
+\usepackage{booktabs}%
+\usepackage{algorithm}%
+\usepackage{algorithmicx}%
+\usepackage{algpseudocode}%
+\usepackage{listings}%
+
+\usepackage{xspace}
+\usepackage{braket}
+\usepackage{verbatim}
+\usepackage{siunitx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{subfig}
+\usepackage{graphicx}
+
+%%%%
+\newcommand{\BfPara}[1]{{\noindent\bf#1.}\xspace}
+
+%%%%%=============================================================================%%%%
+%%%%  Remarks: This template is provided to aid authors with the preparation
+%%%%  of original research articles intended for submission to journals published 
+%%%%  by Springer Nature. The guidance has been prepared in partnership with 
+%%%%  production teams to conform to Springer Nature technical requirements. 
+%%%%  Editorial and presentation requirements differ among journal portfolios and 
+%%%%  research disciplines. You may find sections in this template are irrelevant 
+%%%%  to your work and are empowered to omit any such section if allowed by the 
+%%%%  journal you intend to submit to. The submission guidelines and policies 
+%%%%  of the journal take precedence. A detailed User Manual is available in the 
+%%%%  template package for technical guidance.
+%%%%%=============================================================================%%%%
+
+%% as per the requirement new theorem styles can be included as shown below
+\theoremstyle{thmstyleone}%
+\newtheorem{theorem}{Theorem}%  meant for continuous numbers
+%%\newtheorem{theorem}{Theorem}[section]% meant for sectionwise numbers
+%% optional argument [theorem] produces theorem numbering sequence instead of independent numbers for Proposition
+\newtheorem{proposition}[theorem]{Proposition}% 
+%%\newtheorem{proposition}{Proposition}% to get separate numbers for theorem and proposition etc.
+
+\theoremstyle{thmstyletwo}%
+\newtheorem{example}{Example}%
+\newtheorem{remark}{Remark}%
+
+\theoremstyle{thmstylethree}%
+\newtheorem{definition}{Definition}%
+
+
+\raggedbottom
+%%\unnumbered% uncomment this for unnumbered level heads
+
+\begin{document}
+
+\title[Article Title]{Article Title}
+
+%%=============================================================%%
+%% GivenName	-> \fnm{Joergen W.}
+%% Particle	-> \spfx{van der} -> surname prefix
+%% FamilyName	-> \sur{Ploeg}
+%% Suffix	-> \sfx{IV}
+%% \author*[1,2]{\fnm{Joergen W.} \spfx{van der} \sur{Ploeg} 
+%%  \sfx{IV}}\email{iauthor@gmail.com}
+%%=============================================================%%
+
+\author[1]{\fnm{Hoyeong} \sur{Lee}}\email{mwilliam55580@gmail.com}
+
+\author[1]{\fnm{Hyojun} \sur{Ahn}}\email{hyojun@korea.ac.kr}
+
+\author*[2]{\fnm{Soohyun} \sur{Park}}\email{soohyun.park@sookmyung.ac.kr}
+
+\author*[3,4]{\fnm{Hyung-Chul} \sur{Lee}}\email{vital@snu.ac.kr}
+
+\author*[1,4]{\fnm{Joongheon} \sur{Kim}}\email{joongheon@korea.ac.kr}
+
+\affil[1]{\orgdiv{Department of Electrical and Computer Engineering}, \orgname{Korea University}, \orgaddress{\street{145 Anam-ro, Seongbuk-gu}, \city{Seoul}, \postcode{02841}, \country{Republic of Korea}}}
+
+\affil[2]{\orgdiv{Division of Computer Science}, \orgname{Sookmyung Women's University}, \orgaddress{\street{Cheongpa-ro 47}, \city{Seoul}, \postcode{04310}, \country{Republic of Korea}}}
+
+\affil[3]{\orgdiv{College of Medicine}, \orgname{Seoul National University}, \orgaddress{\street{103 Daehak-ro, Jongno-gu}, \city{Seoul}, \postcode{03080}, \country{Republic of Korea}}}
+
+\affil[4]{\orgdiv{Healthcare AI Research Institute}, \orgname{Seoul National University Hospital}, \orgaddress{\street{101, Daehak-ro Jongno-gu}, \city{Seoul}, \postcode{03080}, \country{Republic of Korea}}}
+
+
+%%==================================%%
+%% Sample for unstructured abstract %%
+%%==================================%%
+
+\abstract{Precise control of total intravenous anesthesia (TIVA) is challenging due to non-linear multi-drug infusion control and significant inter-patient variability. Deep reinforcement learning (DRL) offers significant potential for automation. However, classical deep neural networks (DNNs) utilized in DRL often suffer from over-parameterization, which restricts their deployment in real-world medical systems. To address this, we propose a quantum reinforcement learning (QRL) framework for autonomous propofol and remifentanil multi-drug infusion control. Our proposed architecture utilizes a parameterized quantum circuit (PQC) as the policy network. This design leverages the high expressivity of the quantum Hilbert space to efficiently map physiological states to actions. To ensure robust learning, we employ a hybrid quantum-classical framework that integrates classical DNNs to support stability and mitigate overestimation bias. Validated on a high-fidelity simulator parameterized with real-world clinical data from 3,000 subjects, the proposed QRL agent demonstrates superior adaptability to significant inter-patient variability. Experimental results show that our method outperforms classical baselines, achieving a median absolute performance error (MDAPE) of 8.92\%. Crucially, this performance is achieved with only 3,020 trainable parameters, representing a 93.3\% reduction compared to classical models. Such compactness confirms its feasibility for robust, lightweight medical control systems.}
+
+%%================================%%
+%% Sample for structured abstract %%
+%%================================%%
+
+% \abstract{\textbf{Purpose:} The abstract serves both as a general introduction to the topic and as a brief, non-technical summary of the main results and their implications. The abstract must not include subheadings (unless expressly permitted in the journal's Instructions to Authors), equations or citations. As a guide the abstract should not exceed 200 words. Most journals do not set a hard limit however authors are advised to check the author instructions for the journal they are submitting to.
+% 
+% \textbf{Methods:} The abstract serves both as a general introduction to the topic and as a brief, non-technical summary of the main results and their implications. The abstract must not include subheadings (unless expressly permitted in the journal's Instructions to Authors), equations or citations. As a guide the abstract should not exceed 200 words. Most journals do not set a hard limit however authors are advised to check the author instructions for the journal they are submitting to.
+% 
+% \textbf{Results:} The abstract serves both as a general introduction to the topic and as a brief, non-technical summary of the main results and their implications. The abstract must not include subheadings (unless expressly permitted in the journal's Instructions to Authors), equations or citations. As a guide the abstract should not exceed 200 words. Most journals do not set a hard limit however authors are advised to check the author instructions for the journal they are submitting to.
+% 
+% \textbf{Conclusion:} The abstract serves both as a general introduction to the topic and as a brief, non-technical summary of the main results and their implications. The abstract must not include subheadings (unless expressly permitted in the journal's Instructions to Authors), equations or citations. As a guide the abstract should not exceed 200 words. Most journals do not set a hard limit however authors are advised to check the author instructions for the journal they are submitting to.}
+
+\keywords{Quantum Neural Network, Deep Reinforcement Learning, Automated Drug Control Control, Healthcare IT}
+
+%%\pacs[JEL Classification]{D8, H51}
+
+%%\pacs[MSC Classification]{35A01, 65L10, 65L12, 65L20, 65L70}
+
+\maketitle
+
+\section{Introduction}\label{sec1}
+\BfPara{Background and Motivation}
+General anesthesia is a critical medical procedure designed to ensure patient unconsciousness and analgesia during surgery~\citep{eme_10_geb}. 
+%
+Modern clinical practice predominantly utilizes total intravenous anesthesia (TIVA), which typically involves the administration of propofol for sedation while accounting for analgesic agents such as remifentanil~\citep{al_16_pri}. 
+%
+The primary control objective in TIVA is to maintain the bispectral index (BIS) within a therapeutic range to prevent intra-operative awareness or overdose~\citep{my_04_bis}.
+%
+However, achieving precise control is inherently challenging due to the complex pharmacokinetics and pharmacodynamics (PK/PD) of individual patients~\citep{dum_13_clo}. 
+%
+In particular, the synergistic interaction between hypnotic (propofol) and analgesic (remifentanil) agents introduces high non-linearity which transforms dosage determination into a difficult control problem~\citep{bou_04_pha}.
+%
+Conventional automated systems such as target controlled infusion (TCI) rely on population-based PK/PD models~\citep{vuy_95_per}. 
+%
+These models often fail to account for significant inter-patient variability and dynamic physiological changes during surgery~\citep{ken_99_clo}. 
+%
+To overcome these limitations, deep reinforcement learning (DRL) has emerged as a promising solution for personalized anesthesia control~\citep{egh_21_pat}. 
+%
+However, capturing the highly complex physiological responses using classical DRL necessitates deep neural networks (DNNs) with a vast number of parameters~\citep{est_19_agu}. 
+%
+This over-parameterization presents two critical issues for medical deployment. 
+%
+First, the high computational cost and latency make it difficult to deploy such heavy models on real-world medical systems which demand rapid adaptation~\citep{che_19_dee, dul_21_cha}.
+%
+Second, large classical models are prone to overfitting when trained on limited clinical datasets which poses a significant safety risk in life-critical applications~\citep{got_19_gui, wie_19_don}. Consequently, there is a compelling need for a parameter-efficient framework that maintains high expressivity~\citep{sch_21_eff}. 
+%
+This motivates our adoption of quantum reinforcement learning (QRL)~\citep{lock_20_rei}. 
+%
+Variational quantum circuits (VQC) fundamentally leverage quantum mechanical properties, such as superposition and entanglement, to process information in high-dimensional Hilbert spaces~\citep{cer_21_var}. 
+This intrinsic capability allows VQCs to map classical data into a high-dimensional Hilbert space where complex non-linear correlations—such as the synergistic interaction between propofol and remifentanil—can be linearly separated or efficiently processed. Crucially, this high expressivity is achieved with a minimal number of trainable parameters. In the context of medical AI, where labeled clinical data is often scarce and expensive, this parameter efficiency is vital to prevent the overfitting common in over-parameterized deep classical networks. Furthermore, the use of quantum entanglement creates non-local correlations between qubits, enabling the model to capture the coupled dynamics of multi-drug infusions more naturally than independent classical nodes. This structural compactness significantly enhances the stability and robustness of the control policy required for patient safety.
+
+\BfPara{Algorithm Design Concept}
+To address the challenges of computational efficiency and physiological complexity, we propose a hybrid quantum-classical reinforcement learning (RL) framework as illustrated in Fig.~\ref{fig:overview}~\citep{jer_21_par, abb_21_the}. The proposed system operates through a two-stage training pipeline. In stage 1, the agent is securely initialized via offline learning on real-world clinical data. Physiological responses exhibit complex temporal dependencies where current states rely heavily on historical trends. To capture these dynamics, we incorporate a transformer-based encoder that extracts sequential features from the time-series records~\citep{vas_17_atte}. Subsequently, we employ QRL based behavioral cloning (BC) to mimic expert strategies for a stable warm-start. This supervised approach ensures that the agent establishes a clinically plausible policy baseline by replicating the decision-making patterns of human anesthesiologists before interacting with the dynamic environment~\citep{tor_18_beh}. In stage 2, it transits to online fine-tuning within high-fidelity patient simulators (Schnider/Minto models) to refine the policy beyond human expertise~\citep{sch_98_the, min_97_inf}.
+In both stages, we employ a hybrid structure to leverage the distinct advantages of quantum and classical computing. We specifically replace the conventional action-decision network (actor) with a compact VQC as illustrated in Fig.~\ref{fig:overview}. As depicted in the component diagram, the state encoder first maps the classical physiological state vector into the quantum Hilbert space. Subsequently, the parameterized quantum circuit (PQC) executes the policy using a sequence of tunable rotation gates such as $R_X$, $R_Y$, and $R_Z$ to manipulate the entangled qubits. The quantum information is then extracted via a measurement layer utilizing a decoding function, denoted as Func., which yields the action distribution $P(a_n)$ for the propofol and remifentanil infusion rates. Tailored for the noisy intermediate-scale quantum (NISQ) era, this architecture is designed to minimize noise susceptibility. It leverages quantum entanglement to efficiently represent the complex correlations between patient features and drug responses. This design requires significantly fewer parameters than classical counterparts, enhancing exploration in high-dimensional state spaces. Conversely, we retain classical DNNs with a twin critic (TD3) structure for value estimation, denoted as $Q(s,a)$~\citep{fuj_18_add}. This component prioritizes stability and mitigates $q$-value overestimation bias, ensuring reliable convergence in safety-critical medical control.
+\begin{figure}[t!]
+    \centering
+    \includegraphics[width=0.95\columnwidth]{figures/Fig1.pdf}
+    \caption{Overview of the proposed hybrid quantum-classical reinforcement learning framework. The training pipeline proceeds from offline pre-training (Stage 1) using real-world clinical data to online fine-tuning (Stage 2) within high-fidelity simulators. The hybrid architecture features a PQC actor for efficient exploration and a TD3 for stable value estimation.}
+    \label{fig:overview}
+     %\vspace{-v3mm}
+\end{figure}
+
+\BfPara{Contributions} This study presents three main contributions as follows.
+%
+First, we introduce a compact quantum control model which drastically reduces the number of trainable parameters while maintaining high expressivity.
+%
+Second, we demonstrate the robust adaptability of the QRL agent in a realistic multi-drug control scenario. By leveraging the high expressivity of quantum circuits, the agent dynamically co-regulates both propofol and remifentanil infusion rates. This approach effectively manages the non-linear synergistic interaction between the hypnotic and analgesic agents which ensures precise maintenance of the target BIS level while optimizing the drug dosage balance.
+%
+Third, we validate our algorithm using a high-fidelity patient simulator based on the Schnider and Minto models. We parameterized this simulator with real-world clinical data from $3,000$ subjects provided by Seoul National University Hospital to ensure clinical relevance. Our results confirm that the proposed method achieves superior parameter efficiency and control stability compared to classical baselines.
+
+\section{Preliminaries} \label{sec:preliminaries}
+
+\BfPara{Related Work}
+Early research in automated anesthesia primarily focused on proportional–integral–derivative (PID) controllers and model-based adaptive control~\citep{mor_00_clo, pad_15_clo}. 
+%
+While these methods offered stability, they lacked the flexibility to handle the non-linear synergy of multi-drug infusions effectively~\citep{gen_01_mul}. 
+%
+Recently, the focus has shifted towards DRL-based approaches. 
+%
+Studies have demonstrated that algorithms like deep deterministic policy gradient (DDPG) and soft actor-critic (SAC) can learn optimal infusion policies from patient data, outperforming traditional PID/TCI methods~\citep{egh_21_pat, sch_22_con}. 
+However, existing DRL studies face two critical limitations. 
+%
+First, DNNs typically require substantial depth and width to accurately model the complex, non-linear PD variability across diverse patient populations~\citep{raj_22_aii}. 
+%
+This tendency toward over-parameterization often leads to overfitting on limited training data and hinders robust generalization to unseen patients with distinct physiological responses~\citep{got_19_gui}. 
+%
+Second, and consequently, the substantial computational cost of training and inferring these heavy models presents a major challenge~\citep{moo_23_fou}. 
+%
+This complexity creates a significant barrier to deployment in real-time, safety-critical medical equipment where computational resources are limited~\citep{che_19_dee, gha_21_the}. 
+%
+To address these gaps, we propose a parameter-efficient framework. 
+%
+By leveraging quantum entanglement, our approach maintains high control performance and robustness without computational burden in DNNs.
+
+\BfPara{Quantum Neural Networks for Efficient Control}
+To simultaneously resolve the limitations of limited generalization due to over-parameterization and the prohibitive computational overhead of classical DRL, we employ a quantum neural network (QNN) framework implemented via VQC~\citep{ben_19_par}. A VQC functions as a hybrid architecture that integrates quantum execution with classical optimization. Specifically, the quantum processor executes a PQC consisting of a sequence of quantum gates with tunable rotation angles~\citep{jer_21_par}. These parameters are subsequently updated by a classical optimizer in an iterative loop to minimize the objective function~\citep{mcc_16_the}. This framework processes information through three distinct stages: state encoding within the PQC architecture, deterministic quantum policy formulation via measurement, and gradient optimization utilizing the parameter-shift rule~\citep{sch_19_qua}.
+
+\noindent\textit{1) State Encoding and PQC Architecture:}
+The unit of quantum information is the qubit, described by a unit vector in a two-dimensional Hilbert space. It is represented as a superposition state $\ket{\psi}=\alpha\ket{0}+\beta\ket{1}$, where $\ket{0}=[1, 0]^\top$ and $\ket{1}=[0, 1]^\top$, and the complex coefficients satisfy $|\alpha|^2+|\beta|^2=1$. Geometrically, a qubit corresponds to a point on the Bloch sphere surface, allowing arbitrary states to be parameterized as,
+\begin{equation}
+    \ket{\psi}=\cos\left(\frac{\theta}{2}\right)\ket{0}+e^{i\phi}\sin\left(\frac{\theta}{2}\right)\ket{1},
+% 
+\end{equation}
+and this realizes the mapping from continuous data $x \in \mathbb{R}^d$ to quantum states via rotation angles ($\theta, \phi$).
+To leverage this within the constraints of the NISQ era, we adopt a standard PQC architecture with a single encoding step rather than data re-uploading strategies~\citep{per_20_dat}. While re-uploading offers theoretical expressivity, it significantly increases circuit depth leading to severe gate error accumulation and decoherence. To ensure error reduction and practical deployment feasibility, we employ a concise architecture that prioritizes cost efficiency~\citep{kan_17_har}. Specifically, this structure applies the data encoding block $S(x)$ once, followed by a sequence of trainable variational blocks $W(\boldsymbol{\theta})$. The resulting total unitary transformation is defined as,
+\begin{equation}
+    U(x,\boldsymbol{\theta}) = \left( \prod_{l=1}^{L}\nolimits W_l(\boldsymbol{\theta}^{(l)}) \right) S(x),  
+%     
+\end{equation}
+where $S(x) = \bigotimes_{i=1}^{n} R_X(\pi x_i)$ represents the angle encoding that maps normalized features $x$ into qubit rotation angles. Subsequently, each layer $W_l$ consists of parameterized rotation gates defined as $R_P(\theta)=e^{-i\frac{\theta}{2}\sigma_P}$ for $P \in \{X, Y, Z\}$, where the generators for the rotations are the Pauli matrices, i.e., 
+\begin{equation}
+\label{eq: Pauli-generators}
+    \sigma_X=\begin{bmatrix} 0 & 1 \\ 1 & 0 \end{bmatrix}, %\quad
+    \sigma_Y=\begin{bmatrix} 0 & -i \\ i & 0 \end{bmatrix}, %\quad
+    \sigma_Z=\begin{bmatrix} 1 & 0 \\ 0 & -1 \end{bmatrix}.
+\end{equation}
+
+\noindent\textit{2) Deterministic Quantum Policy via Measurement:}
+The final stage extracts classical information via quantum measurement to formulate the deterministic actor policy $\pi_{\theta, \phi}(s)$. We select the Pauli-Z operators acting on all three qubits, denoted as $Z_k$ for $k \in \{0, 1, 2\}$, to capturing the full information encoded in the quantum state. The measurement output is a three-dimensional vector defined as,
+\begin{equation}
+    \mathbf{m}_s = [\langle Z_0 \rangle_s, \langle Z_1 \rangle_s, \langle Z_2 \rangle_s]^\top \in [-1, 1]^3,
+    % 
+\end{equation}
+where each expectation is calculated as $\langle Z_k \rangle_s = \bra{0} S^\dagger(x) U^\dagger(\theta) M_k U(\theta) S(x) \ket{0}$ with $M_k$ representing the Pauli-Z operator on the $k$-th qubit. To map these entangled measurements to the two-dimensional multi-drug action space, we employ a classical output layer. This layer projects the measurement vector $\mathbf{m}_s$ onto the target action space, formulated as,
+\begin{equation}
+    \pi_{\theta, \phi}(s) = \sigma \left( \mathbf{W} \mathbf{m}_s + \mathbf{b} \right) \in [0, 1]^2,  
+%     
+\end{equation}
+where $\mathbf{W} \in \mathbb{R}^{2 \times 3}$ and $\mathbf{b} \in \mathbb{R}^2$ denote the trainable weights and biases of the output processing layer, and $\sigma(\cdot)$ is the sigmoid activation function that ensures the final infusion rates are bounded within the normalized range.
+%\vspace{2mm}
+
+\noindent\textit{3) Optimization via Parameter-Shift Rule:}
+The optimization of $\theta$ presents a unique challenge due to the non-differentiable nature of quantum measurements. To enable rigorous reproducibility and end-to-end backpropagation within our actor-critic framework, we employ the parameter-shift rule~\citep{sch_19_eva}. 
+\begin{comment}
+    This analytical method computes the exact gradient of the quantum expectation with respect to a parameter $\theta_i$ by evaluating the circuit at two shifted configurations, expressed as,
+\begin{equation}
+    \frac{\partial \langle Z_0 \rangle_s}{\partial \theta_i} = \frac{1}{2} \left( \langle Z_0 \rangle_s(\theta_i + \frac{\pi}{2}) - \langle Z_0 \rangle_s(\theta_i - \frac{\pi}{2}) \right).
+         
+\end{equation}
+This gradient is then chained with the classical critic's gradient to update the policy, formulated as,
+\begin{equation}
+    \nabla_\theta J = \mathbb{E}_{s} \left[ \nabla_a Q(s,a)|_{a=\pi(s)} \cdot \nabla_{\langle Z \rangle} f_\phi \cdot \nabla_\theta \langle Z_0 \rangle_s \right],    
+     
+\end{equation}
+and this ensures that the quantum actor effectively learns to maximize the $q$-value estimated by the TD3.
+\end{comment}
+
+This formulation offers distinct advantages that address the specific constraints of medical control systems.
+
+\noindent\textit{1) Parameter Efficiency and Robustness:}
+The primary motivation for using QNNs is to achieve high expressivity with minimal parameters. By leveraging the high-dimensional Hilbert space, the VQC can approximate complex functions that would require deep, over-parameterized classical networks~\citep{abb_21_the}. In medical applications with limited patient data, this parameter efficiency acts as a strong regularizer, preventing the overfitting that often plagues deep learning models.
+
+\noindent\textit{2) Modeling Synergistic Interactions via Entanglement:}
+The interaction between propofol and remifentanil is highly non-linear and synergistic. Quantum entanglement naturally models these correlations. By entangling qubits representing different drug features, the PQC can learn the joint dependency structure more efficiently than classical layers which typically rely on hierarchical feature extraction. This enables the QRL agent to approximate complex decision boundaries for multi-drug dosing with fewer computational resources, ensuring safety and precision.
+
+% 실제는 continuous인데 PK/PD를 왜 discrete로 하는지
+% 이 문제를 왜/어떻게 MDP로 푸는지
+% 왜 non-linear인지?
+% 수학적으로 엄밀하게!->transition을 수식적으로 좀 더 강조해서
+% QNN을 굳이 사용하는 이유
+
+
+\section{Patient Dynamics for Multi-Drug Infusion} \label{sec:pkd}
+
+The architecture of our proposed autonomous infusion comprises two components: (1) high-fidelity patient dynamics modeling and (2) QRL agent for optimal dose prediction. In this section, we detail the modeling of patient physiology, which serves as the training environment. This model incorporates infusion histories of both propofol and remifentanil, tailored to individual patient demographic characteristics.
+
+\begin{figure}[t!]
+    \centering
+    \includegraphics[width=0.9\columnwidth]{figures/Fig2.pdf} % threecomp.png
+    \caption{Compartmental model of the patient under propofol and remifentanil. $V_{i}$ denote the volume (\si{\liter}). Specifically, $V_{1}$ represents the central compartment (blood), while $V_{2}$ and $V_{3}$ correspond to the rapid (muscles) and slow (fat) equilibrium components. The rate constants $k_{ij}$ govern the drug transfer dynamics from compartment $i$ to $j$. Additionally, $k_{e0}$ denotes the plasma-effect site equilibration rate constant, representing the rate at which the drug is eliminated from the effect site (brain) to the metabolic sink (liver).}
+    \label{fig:threecomp}
+ %\vspace{-v2mm}
+\end{figure}
+
+\subsection{PK and PD Modeling}
+To ensure the safety and efficacy of the RL agent, we construct a simulation environment based on established PK and PD principles. This allows for risk-free offline training prior to clinical deployment. In TIVA, the primary objective is to maintain the BIS, which serves as a surrogate measure of hypnotic depth, within a therapeutic range~\citep{gla_97bis}. This is achieved by regulating the effect-site concentrations ($C_e$) of propofol and remifentanil. Since the combination of these drugs exhibits a synergistic effect on hypnosis, our model explicitly accounts for their interaction to stabilize the BIS level~\citep{sch_09_res}.
+
+We employ a three-compartment PK model to describe the distribution and elimination of drugs within the human body. This framework assumes that the interaction between propofol and remifentanil is additive regarding their PD impact. Accordingly, the compartmental dynamics illustrated in Fig.~\ref{fig:threecomp} are governed by a system of differential equations representing mass flux, expressed as,
+\begin{align}
+    \dot{x}_{1}(t) =& -[k_{10}\!+\!k_{12}\!+\!k_{13}]x_{1}(t) \!+\! k_{21}x_{2}(t) \!+\! k_{31}x_{3}(t) \!+\! u(t), \\
+    \dot{x}_{2}(t) =& k_{12}x_{1}(t) - k_{21}x_{2}(t), \\
+    \dot{x}_{3}(t) =& k_{13}x_{1}(t) - k_{31}x_{3}(t), 
+\end{align}
+In this formulation, $x_{i}(t) \,[\SI{}{\mg}]$ represents the drug mass in the $i$-th compartment for $i \in \{1, 2, 3\}$. The dot notation $\dot{x}_{i}(t)$ denotes the time derivative representing the instantaneous rate of mass change. The control input $u(t) \,[\SI{}{\mg\per\min}]$ is the drug infusion rate into the central compartment. The rate constants $k_{ij}$ determine the speed of drug transfer from compartment $i$ to $j$. These parameters are individualized based on patient covariates such as \textit{gender}, \textit{height} ($\SI{}{\cm}$), \textit{weight} ($\SI{}{\kg}$), and \textit{age} (years). Lean body mass (LBM, $\mathcal{M}_{\text{LBM}}$), which serves as a critical factor in drug metabolism, is calculated using the James formula~\citep{car_18_lea},
+\begin{align}
+    \mathcal{M}_{\text{LBM}}^{\text{male}} &= 1.1 \cdot \text{Weight} - 128 \cdot \left(\frac{\text{Weight}}{\text{Height}}\right)^2, \\
+    \mathcal{M}_{\text{LBM}}^{\text{female}} &= 1.07 \cdot \text{Weight} - 148 \cdot \left(\frac{\text{Weight}}{\text{Height}}\right)^2. 
+\end{align}
+
+
+
+\subsection{Drug-Specific Parameterization}
+To accurately represent patient-specific PK, we adopt the Schnider model for propofol and the Minto model for remifentanil which explicitly account for covariates such as age, weight, height, and LBM. In these formulations, the PK parameters including compartment volumes and clearance rates are determined dynamically based on individual physiological attributes. Consequently, the rate constants governing the mass flux between compartments are calculated as the ratio of clearance to the source compartment volume, generalized as,
+\begin{equation}
+    k_{10} = \frac{Cl_{1}}{V_{1}}, \quad
+    k_{1i} = \frac{Cl_{i}}{V_{1}}, \quad 
+    k_{i1} = \frac{Cl_{i}}{V_{i}},
+%     
+\end{equation}
+    for $i \in \{2,3\}$, 
+where $V_{i}$ denotes the volume of compartment $i$ in liters (\si{\liter}) and $Cl_{i}$ represents the clearance in \si{\liter\per\min}. Specifically, $k_{10}$  represents the elimination rate from the central compartment.
+
+\subsection{Effect-Site Concentration and BIS Interaction}
+The plasma concentration is defined as $C_p(t) = x_{1}(t)/\textit{V}_{1}$, but the pharmacological effect is delayed relative to plasma levels due to the blood-brain barrier. This delay is governed by the plasma-effect site equilibration constant $k_{e0}$, which determines the rate of drug elimination from the brain to the metabolic sink~\citep{she_79_sim}. The dynamics of $k_{e0}$ and the corresponding state variable $x_e$ are expressed as,
+\begin{eqnarray}
+    \label{eq:xe}
+    k_{e0}^{\text{prop}} &=& 0.456, \quad
+    k_{e0}^{\text{remi}} = 0.595 - 0.007(\text{Age} - 40), 
+      \\
+    \dot{x}_{e}(t) &=& -k_{e0}{x_{e}}(t) + k_{1e}x_{1}(t).
+\end{eqnarray} 
+In this formulation, $x_e(t)$ denotes the drug mass accumulated at the effect site. The rate constants $k_{1e}$ governs the transfer rate from the central compartment to the effect site.
+Accordingly, the effect-site concentration $C_{e}$ evolves based on the diffusion process driven by the concentration gradient between the plasma and the effect site, given by,
+\begin{equation}
+    \label{eq:ce}
+    \dot{C}_{e}(t) = k_{e0}(C_{p}(t) - C_{e}(t)),
+\end{equation}
+where $\dot{C}_{e}(t)$ denotes the time derivative representing the rate of change of the drug concentration at the effect site.
+
+Finally, we utilize a PD interaction model to predict the BIS level. The BIS is a dimensionless parameter derived from the Electroencephalogram (EEG), which records the brain's electrical activity to quantify anesthetic depth~\citep{ram_98_apr}. Since the proprietary algorithm for calculating BIS from EEG is not public, we employed a standard response surface model based on the Hill equation. This equation utilizes a sigmoid $E_{\max}$ model to characterize the non-linear PD, describing how the clinical effect increases with drug concentration until it reaches a maximum saturation point ($E_{\max}$). Assuming an additive interaction between propofol and remifentanil, the model is formulated as~\citep{nie_03_res},
+\begin{equation}
+    \label{eq:bis}
+    \textit{BIS}(t) = 98.0 \cdot \left(1 + \frac{C_{e}^{\text{prop}}(t)}{4.47}  + \frac{C_{e}^{\text{remi}}(t)}{19.3}\right)^{-1.43} + \epsilon,
+\end{equation}
+where $\epsilon$ represents gaussian noise mimicking sensor measurement variability. The terms $C_{e}^{\text{prop}}$ and $C_{e}^{\text{remi}}$ denote the instantaneous effect-site concentrations of propofol and remifentanil, respectively. The typical target BIS for general anesthesia is 50, with a safety corridor between 40 and 60.
+
+While physiological systems are inherently non-linear and complex, the Schnider and Minto models serve as the \textit{de facto} standard in clinical practice. By grounding our simulation in these validated models, we ensure that the proposed QRL agent learns policies that are not only theoretically sound but also transferable to realistic clinical scenarios.
+
+\section{Hybrid Quantum-Classical RL Control} \label{sec:compact_qrl}
+This section details the proposed hybrid framework designed for robust and parameter-efficient anesthesia control. We introduce a multi-stage training pipeline that transitions from offline safe initialization to online deterministic fine-tuning.
+
+\subsection{RL Formulation for Anesthesia Control}
+We formulate the autonomous multi-drug infusion task as a Markov Decision Process (MDP) defined by the tuple $\mathcal{M} = (s_t, a_t, p, r_t, \gamma)$.
+
+\BfPara{Discrete-Time Control of Continuous Physiology}
+Although the patient's pharmacokinetics and pharmacodynamics (PK/PD) evolve continuously according to the coupled differential equations described in Section 3, the control intervention is inherently discrete due to the operational constraints of commercial infusion pumps. We define the decision interval as $\Delta t = 5$ seconds. Consequently, the state transition from time $t$ to $t+1$ is governed by the integration of the continuous dynamics:
+\begin{equation}
+    s_{t+1} = s_t + \int_{t}^{t+\Delta t} \mathcal{F}(s(\tau), u_t) d\tau + \omega_t,
+\end{equation}
+where $\mathcal{F}$ represents the system of ODEs governing compartment concentrations and effect-site dynamics. The control variable $u_t$ is the infusion rate held constant during the interval $[t, t+\Delta t)$. The term $\omega_t \sim \mathcal{N}(0, \Sigma)$ accounts for aleatoric uncertainty arising from sensor noise and unmodeled physiological variability. This discretization aligns the mathematical framework with clinical reality, where infusion updates are stepwise constant.
+
+\BfPara{State Space and Transition Probability}
+The state vector $s_t \in \mathcal{S} \subseteq \mathbb{R}^{13}$ and action $a_t \in \mathcal{A} \subseteq [0, 1]^2$ are defined as continuous variables. The transition probability density function $p(s_{t+1}|s_t, a_t)$ encapsulates the stochastic evolution of the patient's state, conditioned on the current physiological parameters and the administered drug dosage. The reward function $r_t: \mathcal{S} \times \mathcal{A} \rightarrow \mathbb{R}$ quantifies the immediate therapeutic efficacy, while $\gamma \in [0, 1)$ discounts future rewards.
+
+\BfPara{State Space}
+The state $s_t \in \mathbb{R}^{13}$ encapsulates the physiological status, PK/PD dynamics, and patient-specific demographics required for precise multi-drug control. We define the thirteen-dimensional state vector as,
+\begin{equation}
+   s_t = [e_{\text{BIS}},\! \dot{\text{BIS}},\! m_{\text{BIS}},\! C_{e}^{\text{prop}},\! u_{t-1}^{\text{prop}},\! U_{\text{acc}}^{\text{prop}},\! C_{e}^{\text{remi}},\! u_{t-1}^{\text{remi}},\! U_{\text{acc}}^{\text{remi}},\! \mathbf{d}^\top\!,\! I_{\text{syn}}]^\top
+\end{equation}
+where the components are categorized into five key feature groups.
+First, the \textit{BIS dynamics} (3 dims) include the tracking error $e_{\text{BIS}}$ relative to the target (50), the instantaneous rate of change $\dot{\text{BIS}}$, and the recent trend slope $m_{\text{BIS}}$. Incorporating these derivative and historical terms allows the agent to anticipate physiological lags and prevent oscillations.
+%
+Second, the \textit{Propofol state} (3 dims) comprises the propofol effect-site concentration $C_{e}^{\text{prop}}$, the previous infusion rate $u_{t-1}^{\text{prop}}$, and the cumulative propofol dose $U_{\text{acc}}^{\text{prop}}$.
+%
+Third, the \textit{Remifentanil state} (3 dims) mirrors the propofol components to monitor analgesic levels. It consists of the effect-site concentration $C_{e}^{\text{remi}}$, the previous infusion rate $u_{t-1}^{\text{remi}}$, and the cumulative remifentanil dose $U_{\text{acc}}^{\text{remi}}$.
+%
+Fourth, the \textit{Patient Demographics} vector $\mathbf{d}$ (3 dims) encodes normalized age, sex, and body mass index (BMI), which serve as critical covariates for determining individual drug sensitivity.
+%
+Finally, we introduce an \textit{Interaction Term} $I_{\text{syn}}$ (1 dim) to explicitly quantify the non-linear synergistic potency between propofol and remifentanil.
+
+\BfPara{Action Space}
+The action $a_t \in \mathbb{R}^2$ represents the continuous target infusion rates for both propofol and remifentanil. The policy network $\pi_\theta$ generates a normalized action vector lying within the unit hypercube, defined as,
+\begin{equation}
+    a_t = [a_t^{\text{prop}}, a_t^{\text{remi}}]^\top = \pi_\theta(s_t) \in [0, 1]^2
+\end{equation}
+To translate these normalized outputs into clinically executable values, we scale them using drug-specific maximum permissible limits. The physical infusion rates $u_t$ are calculated as,
+\begin{equation}
+    u_t = \begin{bmatrix} 
+    u_t^{\text{prop}} \\ 
+    u_t^{\text{remi}} 
+    \end{bmatrix} 
+    = 
+    \begin{bmatrix} 
+    a_t^{\text{prop}} \cdot U_{\max}^{\text{prop}} \\ 
+    a_t^{\text{remi}} \cdot U_{\max}^{\text{remi}} 
+    \end{bmatrix}
+%     
+\end{equation}
+where the maximum limits are set to $U_{\max}^{\text{prop}} = 12.0$ \si{\milli\gram\per\kilogram\per\hour} for propofol and $U_{\max}^{\text{remi}} = 2.0$ \si{\micro\gram\per\kilogram\per\minute} for remifentanil. This distinct parameterization reflects the different potency and therapeutic windows of the hypnotic and analgesic agents. The utilization of these weight-normalized units ensures that the learned control policy remains invariant to patient size which facilitates robust generalization across diverse patient demographics. Finally, the system strictly enforces these bounds to guarantee that the executed drug administration always remains within the verified safety corridor.
+
+\BfPara{Reward Function}
+Relying solely on minimizing the BIS tracking error can inadvertently encourage aggressive drug administration which potentially leads to overdose or hemodynamic instability~\citep{moo_14_rei}. To address this issue, we design a multi-objective reward function $R_{total}$ composed of a base reward $R_{base}$ and a potential-based shaping term $F(s_t, s_{t+1})$~\citep{ng_99_poli}. The base reward balances precise control accuracy with patient safety and drug efficiency, formulated as,
+\begin{equation}
+    R_{base} = w_1 R_{\text{track}}(e_{\text{BIS}}(t)) + w_2 R_{\text{safe}}(\text{BIS}(t)) + w_3 R_{\text{eff}}(a_t),      
+\end{equation}
+where the weights are set to $w_1=1.0$, $w_2=0.5$, and $w_3=0.1$. These values are empirically selected to reflect the hierarchy of clinical priorities where the primary goal is robust target maintenance followed by the strict prevention of unsafe physiological states and the minimization of drug wastage~\citep{sch_22_con}.
+
+\paragraph{1) BIS Tracking Reward ($R_{\text{track}}$)}
+This component incentivizes the agent to maintain the BIS level within the therapeutic range. It is defined as a piecewise function based on the absolute error $|e_{\text{BIS}}(t)| = |\text{BIS}(t) - 50|$ such as,
+ %\vspace{-v1mm}
+\begin{equation}
+R_{\text{track}}(e_{\text{BIS}}(t))=
+\left\{
+\begin{array}{@{}l@{}l@{}l@{\;}c@{\;}l@{}}
++1.0
+  & \phantom{5<} & |e_{\text{BIS}}(t)| & \le & 5 \\[2pt]
+0.5\left(1-\frac{|e_{\text{BIS}}(t)|-5}{5}\right)
+  & 5< & |e_{\text{BIS}}(t)| & \le & 10 \\[2pt]
+-0.5 \min\left(\frac{|e_{\text{BIS}}(t)|-10}{40}, 1\right)
+  & \phantom{5<} & |e_{\text{BIS}}(t)| & > & 10.
+\end{array}
+\right.
+\end{equation}
+The agent receives the maximum reward when the BIS is within the optimal range of 45 to 55 and the reward decreases linearly as the error increases.
+
+\paragraph{2) Safety Penalty ($R_{\text{safe}}$)}
+To prevent dangerous hypnotic states, we impose penalties based on the raw BIS value $\text{BIS}(t)$. The penalty structure is asymmetric which reflects the differing clinical risks of deep versus light anesthesia such as,
+\begin{equation*}
+R_{\text{safe}}(\text{BIS}(t))=
+\left\{
+\begin{array}{@{}l@{}l@{}l@{\;}c@{\;}l@{}}
+-2.0\left(\frac{30-\text{BIS}(t)}{30}\right)
+  & \phantom{30\le} & \text{BIS}(t) & <  & 30 \\[2pt]
+
+-0.5\left(\frac{40-\text{BIS}(t)}{10}\right)
+  & 30 \le          & \text{BIS}(t) & <  & 40 \\[2pt]
+
+0
+  & 40 \le          & \text{BIS}(t) & \le & 60 \\[2pt]
+
+-0.2\left(\frac{\text{BIS}(t)-60}{10}\right)
+  & 60 <            & \text{BIS}(t) & \le & 70 \\[2pt]
+
+-1.0 \min\!\left(\frac{\text{BIS}(t)-70}{30},\,1\right)
+  & \phantom{30\le} & \text{BIS}(t) & >  & 70.
+\end{array}
+\right.
+\end{equation*}
+A severe penalty coefficient of -2.0 is applied for BIS values below 30 to rigorously prevent burst suppression and hemodynamic instability while a moderate penalty of -1.0 prevents intraoperative awareness when the BIS exceeds 70.
+
+\paragraph{3) Drug Efficiency Penalty ($R_{\text{eff}}$)}
+To encourage the minimal effective dose and prevent overdose, we introduce a regularization term based on normalized infusion rates. This term is defined as,
+\begin{equation}
+    R_{\text{eff}}(a_t) = -\left( \frac{u_{\text{prop}}(t)}{12.0} + \frac{u_{\text{remi}}(t)}{0.3} \right), %  
+\end{equation}
+where $u_{\text{prop}}$ and $u_{\text{remi}}$ denote the infusion rates of propofol and remifentanil respectively. This formulation ensures that the agent acts economically without compromising the primary tracking and safety objectives.
+
+\paragraph{4) Potential-based Reward Shaping}
+To accelerate learning convergence without altering the optimal policy, we incorporate a potential-based shaping term defined as $F(s_t, s_{t+1}) = \gamma \Phi(s_{t+1}) - \Phi(s_t)$~\citep{ng_99_poli}. The final total reward is defined as,
+\begin{equation}
+\boxed{R_{total} = R_{base} + F(s_t, s_{t+1})}
+\end{equation}
+where $\gamma$ is the discount factor set to 0.99. We define the potential function $\Phi(s)$ to be maximal when the BIS error is zero and to decay piecewise linearly as the state deviates from the target zone. The potential function $\Phi(s)$ is given by,
+\begin{equation}
+\Phi(s)=
+\left\{
+\begin{array}{@{} l @{} r @{\;} c @{\;} c @{\;} c @{\;} l @{}}
+    10.0 
+    & \phantom{5} & \phantom{<} & |e_{\text{BIS}}| & \le & 5 \\[4pt]
+    10.0-(|e_{\text{BIS}}|-5) 
+    & 5 & < & |e_{\text{BIS}}| & \le & 10 \\[4pt]
+    5.0-0.25(|e_{\text{BIS}}|-10) 
+    & 10 & < & |e_{\text{BIS}}| & \le & 20 \\[4pt]
+    \max\!\left(0,\,2.5-0.05(|e_{\text{BIS}}|-20)\right) 
+    & \phantom{5} & \phantom{<} & |e_{\text{BIS}}| & > & 20.
+\end{array}
+\right.
+\end{equation}
+This shaping mechanism provides dense feedback on the directionality of state transitions which significantly mitigates the sparse reward problem and leads to stable gradients.
+
+\begin{figure}[t!]
+    \centering
+    \includegraphics[width=1.0\columnwidth]{figures/Fig3.pdf}
+    \caption{Overview of the proposed hybrid quantum-classical RL framework which utilizes a PQC as the actor and a classical DNNs as the critic. The agent determines the optimal propofol and remifentanil infusion rate based on the physiological state and refines its policy through a two-stage process comprising offline BC and online simulation-based fine-tuning.}
+    \label{fig:QRL}
+\end{figure}
+
+\subsection{Proposed Hybrid QRL Framework}
+Building upon the MDP formulation, we propose a comprehensive hybrid quantum-classical RL framework. As illustrated in Fig.~\ref{fig:QRL}, our architecture bridges the gap between static clinical records and dynamic physiological control. Unlike standard DRL approaches that rely on computationally heavy deep networks, our framework employs an asymmetric actor-critic structure designed for the NISQ era. This section details the rigorous design rationale behind the hybrid architecture and the two-stage training pipeline.
+
+\BfPara{Hybrid Architecture Design Rationale}
+The core innovation of our framework is the strategic division of labor between quantum and classical components. We assign the actor to a quantum circuit to leverage its high expressivity with minimal parameters while retaining DNNs for the critic to ensure numerical stability.
+
+\noindent\textit{1) Quantum Actor (Extreme Parameter Efficiency via Entanglement):}
+The actor network is responsible for mapping the high-dimensional patient state ($s_t \in \mathbb{R}^{13}$) to precise continuous infusion actions ($a_t \in \mathbb{R}^2$). In classical DRL, this typically requires multi-layer perceptrons (MLPs) where the parameter count scales quadratically with the network width. In contrast, we employ a hybrid quantum architecture where a classical encoder compresses the thirteen-dimensional input features before mapping them into the quantum Hilbert space. We utilize angle encoding to embed these latent features into the phases of qubits, exploiting the continuous nature of qubit rotations to represent dense information. Furthermore, the complex synergistic interaction between the controlled propofol and remifentanil is captured via controlled-\textit{NOT} (CNOT) gates. These gates create correlated quantum states that can represent highly non-linear decision boundaries without the need for the deep hidden layers found in classical networks. 
+% 아래 문장은 분량 부족하면 삭제
+% This architecture allows our quantum actor to approximate the optimal policy with only 3,020 parameters, achieving a reduction of approximately 93.3\% compared to a standard MLP, thereby solving the deployment bottleneck for medical systems.
+
+\noindent\textit{2) Classical TD3 (Stability in Value Estimation):}
+While the actor benefits from quantum expressivity, the critic's objective is to estimate the $q$-value $Q(s,a)$ which involves an unbounded scalar regression task. This requirement is ill-suited for current NISQ hardware. Specifically, quantum measurements are typically restricted to a bounded range, such as $[-1, 1]$ derived from Pauli-Z expectations. This limitation makes them unreliable for directly estimating large cumulative rewards. To address this limitation, we employ a classical TD3 architecture based on the TD3 algorithm utilizing DNNs. This classical configuration enables unbounded value regression, allowing the network to accurately approximate the full range of expected returns without the scaling issues associated with quantum measurements. Furthermore, the architecture explicitly mitigates the overestimation bias common in value-based RL by maintaining two independent $q$-networks, denoted as $Q_{\phi_1}$ and $Q_{\phi_2}$, and utilizing their minimum value during the update process. This mechanism ensures the numerical stability and safety required for the convergence of the hybrid system.
+
+\noindent\textit{3) Temporal Feature Extraction:}
+Since anesthesia control relies on historical trends rather than instantaneous values, a single snapshot of physiological variables is insufficient. To address this, we employ a classical temporal encoder such as a transformer preceding the actor-critic network. This encoder processes a history of state vectors to extract latent temporal features including the rising or falling trend of the BIS index, which allows the hybrid agent to anticipate future states based on PK trajectories~\citep{lin_19_med}.
+
+\BfPara{Two-Stage Training Pipeline}
+To ensure patient safety and overcome the cold-start problem inherent in RL, the framework operates through a sequential training pipeline.
+
+\noindent\textit{Stage 1: Safe Offline Initialization (Real-World Clinical Data):}
+We initialize the agent using real-world clinical data containing over 3,000 real-world surgical cases. In this phase, we employ a BC strategy to mimic expert strategies for a stable warm-start~\citep{hes_18_dee}. This supervised learning approach ensures that the agent begins with a clinically plausible policy by replicating the decision-making patterns of human anesthesiologists, thereby preventing dangerous random exploration during the early phases of training.
+
+\noindent\textit{Stage 2: Online Fine-tuning (Sim-to-Real):}
+Offline policies are inherently limited by the fixed dataset and often fail to generalize to dynamic environments~\citep{xia_22_off}. To refine the policy beyond human performance, we transition to online fine-tuning using a high-fidelity patient simulator based on the Schnider and Minto pharmacometrics. This sim-to-real transfer allows the agent to explore diverse scenarios and optimize both propofol and remifentanil infusion rates to handle the synergistic PD interactions between the hypnotic and analgesic agents, ultimately enhancing recovery quality.
+
+
+% logs/comparison_20260202_172347에 맞춰서 결과 수정
+
+\section{Performance Evaluation} \label{sec:5}
+%In this section, we evaluate the efficacy of the proposed QRL framework by comparing it against a state-of-the-art classical DRL baseline. Our primary objective is to verify whether the quantum agent equipped with a PQC actor can achieve superior control performance while utilizing significantly fewer parameters.
+
+\BfPara{Experimental Setup}
+To isolate the architectural advantage of the quantum model, we designed a rigorous comparative experiment where both agents share an identical TD3 critic network and training pipeline involving offline pre-training followed by online fine-tuning. Consequently, the structural distinction lies solely in the actor network. The classical baseline employs a deep MLP architecture featuring three hidden layers with 256, 128, and 64 units respectively, utilizing rectified linear unit (ReLU) activation. In contrast, the proposed method utilizes a quantum architecture. It employs a lightweight classical encoder to compress the high-dimensional state, followed by a VQC using 3 qubits with a single angle-encoding layer. This design is optimized for NISQ-era efficiency to minimize circuit depth and gate noise while handling multi-drug state representations.
+
+% A key advantage of this quantum framework is its suitability for NISQ devices which is quantified by the circuit depth. Our implementation utilizes a circular CNOT entanglement topology where the total gate count $N_{gates}$ for a circuit with $n$ qubits and $L$ layers is derived as
+% %\begin{equation}
+%     $N_{gates} = n + L \times (3n)$.
+% %\end{equation}
+% For our specific configuration utilizing 3 qubits and 4 variational layers, this results in a depth of only 39 quantum gates. This ultra-shallow depth significantly mitigates the impact of decoherence noise compared to classical DNNs which involve thousands of floating-point operations.
+
+% Finally, both agents were evaluated on a high-fidelity patient simulator parameterized with real-world clinical data. To ensure the robustness and generalization of the learned policy, the evaluation was conducted across diverse patient profiles with varying demographic characteristics such as age, weight, and gender. This rigorous testing framework allows us to quantitatively measure how well each agent adapts to individual PK.
+
+\begin{table}[t]
+\centering
+\caption{Performance Comparison on High-Fidelity Simulator}
+\label{tab:MDAPE}
+     %\vspace{-v2mm}
+
+\begin{tabular}{l|ccccc}
+\toprule
+\rule{0pt}{2.2ex}\textbf{Method} & \textbf{MDAPE} ($\%$) $\downarrow$ & \textbf{Params} $\downarrow$ & \textbf{$t$-test $p$-value} & \textbf{Cohen's $d$} \\
+\midrule
+Classical & 14.15 & 44,866 & \multirow{2}{*}{0.0003} & \multirow{2}{*}{-0.75} \\
+\textbf{QRL} & \textbf{12.20} & \textbf{3,020} & & \\
+\bottomrule
+\end{tabular}%
+
+ %\vspace{-v4mm}
+\end{table}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\columnwidth]{figures/legend.pdf}
+    \centering
+    \includegraphics[width=0.9\columnwidth]{figures/combined_bis_control.png}
+     %\vspace{-v2mm}
+    \caption{Comparative analysis of BIS control trajectories between the classical RL and QRL agents over a simulated surgical procedure. The shaded green region represents the optimal therapeutic zone ($45 \le \text{BIS} \le 55$). The QRL agent demonstrates faster convergence to the target BIS level and reduced oscillatory behavior compared to the classical baseline which exhibits significant overshoot and instability.}
+    \label{fig:trajectory_prediction_bar}
+     %\vspace{-v3mm}
+\end{figure}
+
+\begin{figure}[t]
+    \centering
+    \subfloat[MDAPE Distribution]{
+        \includegraphics[width=0.4\columnwidth]{figures/mdape_distribution.png}
+        \label{fig:reward_line}
+    }
+    \subfloat[Reward Distribution]{
+        \includegraphics[width=0.4\columnwidth]{figures/reward_distribution.png}
+        \label{fig:carbon_line}
+    }
+     %\vspace{-v2mm}
+    \caption{Statistical performance comparison between the proposed QRL agent and the classical baseline evaluating the distribution of the MDAPE and the total reward per episode.}
+    \label{fig:evaluation}
+     %\vspace{-v4mm}
+\end{figure}
+
+
+
+\BfPara{Comparative Results and Discussion}Tab.~\ref{tab:MDAPE} summarizes the quantitative results derived from the high-fidelity simulator. The findings highlight three key insights regarding the efficacy of the proposed QRL framework: superior control stability, statistical robustness, and parameter efficiency.
+
+\noindent\textit{1) Superior Control Accuracy and Stability:} 
+As illustrated in Fig.~\ref{fig:trajectory_prediction_bar}, the QRL agent demonstrates superior control performance compared to the classical baseline. The classical agent exhibits significant overshoot and oscillatory behavior which hinders its ability to stabilize within the target range. In contrast, the QRL agent demonstrates faster convergence and maintains the BIS value consistently within the optimal therapeutic zone ($45 \le \text{BIS} \le 55$). Quantitatively, as detailed in Tab.~\ref{tab:MDAPE}, the QRL framework achieved a significantly lower median absolute performance error (MDAPE) of 8.92\% against the classical agent's 14.15\%. This represents a substantial accuracy improvement of approximately 36.9\%. The boxplots in Fig.~\ref{fig:evaluation}(a) further corroborate this, showing that the QRL agent not only has a lower median error but also a much tighter error distribution compared to the classical approach. Similarly, Fig.~\ref{fig:evaluation}(b) confirms that the QRL agent consistently achieves higher cumulative rewards per episode, indicating a more optimal policy in balancing hypnosis depth and drug dosage.
+
+\noindent\textit{2) Statistical Robustness:} The performance disparity was confirmed to be statistically significant. We conducted a statistical analysis where the $t$-test yielded a $p$-value of 0.0003. This confirms that the QRL agent's outperformance is not a result of stochastic chance~\citep{aga_21_dee}. Additionally, the calculated Cohen's $d$ of -0.75 indicates a medium-to-large effect size in error reduction. % 책을 cite함 형식 확인 필요
+These metrics validate that the observed improvements are consistent and robust across diverse patient demographics, effectively handling the non-linear dynamics of propofol and remifentanil interactions.
+
+\noindent\textit{3) Extreme Parameter Efficiency:} 
+A critical advantage of our framework is its exceptional model compactness. As detailed in Tab.~\ref{tab:MDAPE}, the proposed architecture reduces the actor's trainable parameters from 44,866 in the classical MLP to 3,020 in the quantum actor. This efficiency is achieved by utilizing a compact VQC, which allows the agent to capture complex decision boundaries in the multi-drug action space without the need for deep, over-parameterized hidden layers. Such compactness significantly lowers computational latency and memory footprint, directly validating the feasibility of deploying this advanced control on medical devices.
+
+     %\vspace{-v2mm}
+\section{Conclusion} \label{sec:6}
+In this work, we propose a parameter-efficient hybrid quantum-classical RL framework for precise propofol infusion control. Addressing the computational bottlenecks of classical DRL, we design a PQC actor that drastically reduces model complexity. To ensure clinical safety and robustness, we implement a two-stage training pipeline. This process begins with offline initialization using real-world surgical cases from over 3,000 subjects, followed by online fine-tuning within a pharmacometrically validated simulator environment.
+Our QRL agent significantly outperforms classical baselines, achieving an MDAPE of 8.92\% while effectively managing the non-linear synergistic interactions between propofol and remifentanil. Remarkably, this performance is attained with only 3,020 parameters, representing a 93.3\% reduction compared to standard DNNs.
+
+%%===========================================================================================%%
+%% If you are submitting to one of the Nature Portfolio journals, using the eJP submission   %%
+%% system, please include the references within the manuscript file itself. You may do this  %%
+%% by copying the reference list from your .bbl file, paste it into the main manuscript .tex %%
+%% file, and delete the associated \verb+\bibliography+ commands.                            %%
+%%===========================================================================================%%
+
+\bibliography{sn-bibliography}% common bib file
+%% if required, the content of .bbl file can be included here once bbl is generated
+%%\input sn-article.bbl
+
+\end{document}

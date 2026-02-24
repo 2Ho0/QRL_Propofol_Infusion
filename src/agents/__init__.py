@@ -24,21 +24,14 @@ from .quantum_agent import (
     ReplayBuffer, 
     SequenceReplayBuffer,
     EncoderType,
-    HardwareOptimizedQuantumAgent
 )
-from .quantum_ppo_agent import (
-    QuantumPPOAgent,
-    RolloutBuffer
-)
-from .classical_ppo_agent import ClassicalPPOAgent
+
+from .classical_agent import ClassicalDDPGAgent
 
 __all__ = [
     "QuantumDDPGAgent", 
-    "QuantumPPOAgent",
-    "ClassicalPPOAgent",
+    "ClassicalDDPGAgent",
     "ReplayBuffer", 
     "SequenceReplayBuffer",
-    "RolloutBuffer",
     "EncoderType",
-    "HardwareOptimizedQuantumAgent"
 ]

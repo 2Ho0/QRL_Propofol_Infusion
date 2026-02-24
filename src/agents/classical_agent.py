@@ -434,8 +434,8 @@ class ClassicalDDPGAgent:
         if hasattr(action, '__len__') and len(action) == 2:
             # Dual drug: [propofol, remifentanil]
             action_scaled = np.array([
-                action[0] * 12.0,  # Propofol [0-1] → [0-12 mg/kg/h]
-                action[1] * 2.0    # Remifentanil [0-1] → [0-2.0 μg/kg/min]
+                action[0] * 12.0,  # Propofol [0-1] → [0-12 mg/kg/h] (matches env action_space)
+                action[1] * 2.0    # Remifentanil [0-1] → [0-2.0 μg/kg/min] (matches env action_space)
             ])
         else:
             # Single drug
@@ -469,8 +469,8 @@ class ClassicalDDPGAgent:
         if hasattr(action, '__len__') and len(action) == 2:
             # Dual drug: [propofol mg/kg/h, remifentanil μg/kg/min]
             action_normalized = np.array([
-                action[0] / 12.0,  # Propofol [0-12] → [0-1]
-                action[1] / 2.0    # Remifentanil [0-2.0] → [0-1]
+                action[0] / 12.0,  # Propofol [0-12] → [0-1] (matches env action_space)
+                action[1] / 2.0    # Remifentanil [0-2.0] → [0-1] (matches env action_space)
             ])
         else:
             # Single drug

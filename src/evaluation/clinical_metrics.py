@@ -24,6 +24,8 @@ class ClinicalMetrics:
     mdpe: float  # Median Performance Error
     mdape: float  # Median Absolute Performance Error  
     wobble: float  # Wobble (median absolute deviation)
+    divergence: float  # Slope of PE over time (drift)
+    global_score: float  # Combined score (MDAPE + Wobble) / sqrt(Time in Target)
     
     # Time-based metrics
     induction_time: float  # Minutes to reach target
@@ -48,6 +50,8 @@ class ClinicalMetrics:
             'mdpe': self.mdpe,
             'mdape': self.mdape,
             'wobble': self.wobble,
+            'divergence': self.divergence,
+            'global_score': self.global_score,
             'induction_time': self.induction_time,
             'time_in_target': self.time_in_target,
             'recovery_time': self.recovery_time,
@@ -58,6 +62,64 @@ class ClinicalMetrics:
             'episode_reward': self.episode_reward,
             'episode_length': self.episode_length
         }
+
+
+
+def compute_divergence(
+    pe_history: np.ndarray,
+    time_minutes: np.ndarray
+) -> float:
+    """
+    Compute Divergence (drift of performance error over time).
+    
+    Defined as the slope of the linear regression of |PE| against time.
+    Positive slope means control is getting worse over time.
+    
+    Args:
+        pe_history: Array of performance errors (T,)
+        time_minutes: Array of time points in minutes (T,)
+        
+    Returns:
+        Slope of regression (divergence)
+    """
+    if len(pe_history) < 2:
+        return 0.0
+        
+    # Linear regression of |PE| vs time
+    # y = mx + c, where m is divergence
+    abs_pe = np.abs(pe_history)
+    slope, _ = np.polyfit(time_minutes, abs_pe, 1)
+    return float(slope)
+
+
+def compute_global_score(
+    mdape: float,
+    wobble: float,
+    time_in_target: float
+) -> float:
+    """
+    Compute Global Score (GS).
+    
+    GS = (MDAPE + Wobble) / sqrt(Time in Target %)
+    Lower is better.
+    
+    Args:
+        mdape: Median Absolute Performance Error
+        wobble: Wobble
+        time_in_target: Percentage of time in target range (0-100)
+        
+    Returns:
+        Global Score
+    """
+    if time_in_target <= 0:
+        return float('inf')
+        
+    # Standard formula uses fraction (0-1) for time, but usually percentage is inputs
+    # Let's stick to percentage for denominator scaling to match literature typical values
+    # Or convert to fraction? Let's use percentage but ensure denominator is clear.
+    # GS = (MDAPE + Wobble) / sqrt(Time in Target %)
+    
+    return (mdape + wobble) / np.sqrt(time_in_target)
 
 
 def compute_induction_time(
@@ -342,9 +404,21 @@ def evaluate_episode(
     mdape = float(np.median(np.abs(pe)))
     wobble = float(np.median(np.abs(pe - mdpe)))
     
+    # Divergence
+    time_minutes = np.arange(len(pe)) / 60.0  # Assuming 1Hz sampling, converted to minutes? No, sampling_rate is usually 1.
+    # Note: evaluate_episode doesn't take sampling_rate directly. Assuming each step is 1 min based on simulation dt?
+    # Environment usually has dt=1 min. Let's assume input history matches 1 min steps.
+    dt = 1.0 
+    time_minutes = np.arange(len(pe)) * dt
+    divergence = compute_divergence(pe, time_minutes)
+    
     # Time-based metrics
     induction_time = compute_induction_time(bis_history, target_bis, threshold)
     time_in_target = compute_time_in_target(bis_history, target_bis, threshold)
+    
+    # Global Score
+    global_score = compute_global_score(mdape, wobble, time_in_target)
+    
     recovery_time = compute_recovery_time(bis_history, drug_history)
     
     # Safety violations
@@ -368,6 +442,8 @@ def evaluate_episode(
         mdpe=mdpe,
         mdape=mdape,
         wobble=wobble,
+        divergence=divergence,
+        global_score=global_score,
         induction_time=induction_time,
         time_in_target=time_in_target,
         recovery_time=recovery_time,
@@ -390,6 +466,8 @@ def print_metrics_summary(metrics: ClinicalMetrics):
     print(f"  MDPE (Median Performance Error):  {metrics.mdpe:>8.2f}")
     print(f"  MDAPE (Median Absolute PE):       {metrics.mdape:>8.2f}")
     print(f"  Wobble (Variability):             {metrics.wobble:>8.2f}")
+    print(f"  Divergence (Drift):               {metrics.divergence:>8.4f}")
+    print(f"  Global Score (Combined):          {metrics.global_score:>8.2f}")
     
     print("\n⏱️  Time-Based Metrics:")
     print(f"  Induction Time:                   {metrics.induction_time:>8.2f} min")

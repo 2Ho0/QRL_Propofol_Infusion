@@ -63,102 +63,31 @@ pip install -r requirements.txt
 
 ### Training Commands
 
-#### 1. **Offline Pre-training** (VitalDB Real Patient Data)
+#### 1. **Run Full Comparison Experiment (Dual Drug)**
+
+This command executes the two-stage hybrid training (Offline Behavioral Cloning → Online DDPG fine-tuning) on dual-drug control (Propofol + Remifentanil), and seamlessly compares the Quantum vs. Classical RL agents.
 
 ```bash
-# Download VitalDB data (first time only)
-python experiments/train_offline.py --download --max_cases 100
-
-# Behavioral Cloning (BC) only
-python experiments/train_offline.py --bc_only --bc_epochs 100
-
-# Conservative Q-Learning (CQL)
-python experiments/train_offline.py --bc_epochs 50 --cql_epochs 500
-```
-
-#### 2. **2-Stage Hybrid Training** (Offline → Online)
-
-**Single Drug (Propofol)**:
-```bash
-# BC-only offline training
-python experiments/train_hybrid.py \
-    --n_cases 100 --offline_epochs 50 --online_episodes 500
-
-# BC + CQL (more conservative)
-python experiments/train_hybrid.py \
-    --n_cases 100 --offline_epochs 50 --online_episodes 500 \
-    --use_cql --cql_alpha 1.0
-```
-
-**Dual Drug (Propofol + Remifentanil)**:
-```bash
-# BC-only (default)
-python experiments/compare_quantum_vs_classical_dualdrug.py \
-    --n_cases 100 --offline_epochs 50 --online_episodes 500
-
-# CQL-only (conservative)
-python experiments/compare_quantum_vs_classical_dualdrug.py \
-    --n_cases 100 --offline_epochs 50 --online_episodes 500 \
-    --use_cql --bc_weight 0.0 --cql_alpha 1.0
-
-# BC + CQL hybrid (recommended)
-python experiments/compare_quantum_vs_classical_dualdrug.py \
-    --n_cases 100 --offline_epochs 50 --online_episodes 500 \
-    --use_cql --bc_weight 0.8 --cql_alpha 1.0
-```
-
-**CQL Parameters**:
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `--use_cql` | Enable Conservative Q-Learning | False |
-| `--bc_weight` | BC loss weight (0.0-1.0) | 1.0 |
-| `--cql_alpha` | CQL penalty weight | 1.0 |
-| `--cql_temp` | Temperature for logsumexp | 1.0 |
-| `--cql_num_random` | Random actions for penalty | 10 |
-
-#### 3. **Pure Online Training** (Simulator Only)
-
-```bash
-# Quantum DDPG
-python experiments/train_quantum.py --n_episodes 1000 --encoder lstm
-
-# Classical DDPG
-python experiments/train_classical.py --n_episodes 1000
-
-# Quantum PPO
-python experiments/train_ppo.py --agent_type quantum --n_episodes 1000
-
-# Classical PPO
-python experiments/train_ppo.py --agent_type classical --n_episodes 1000
-```
-
-#### 4. **Algorithm Comparison**
-
-```bash
-# Quantum vs Classical (single drug)
 python experiments/compare_quantum_vs_classical.py \
-    --n_cases 100 --offline_epochs 50 --online_episodes 500
-
-# Quantum vs Classical (dual drug)
-python experiments/compare_quantum_vs_classical_dualdrug.py \
-    --n_cases 100 --offline_epochs 50 --online_episodes 500
-
-# DDPG vs PPO
-python experiments/compare_ddpg_vs_ppo.py \
-    --online_episodes 500 --n_test_episodes 50
+    --n_cases 6000 \
+    --offline_epochs 30 \
+    --batch_size 128 \
+    --bc_weight 0.8 \
+    --use_cql False \
+    --online_episodes 300 \
+    --sampling_interval 60 \
+    --smoothing_beta 0.8
 ```
 
-#### 5. **Quick Test** (Fast debugging)
-
-```bash
-# Single drug
-python experiments/train_hybrid.py \
-    --n_cases 5 --offline_epochs 5 --online_episodes 50
-
-# Dual drug
-python experiments/compare_quantum_vs_classical_dualdrug.py \
-    --n_cases 5 --offline_epochs 5 --online_episodes 50
-```
+#### **Key Experiment Parameters**:
+- `--n_cases 6000`: Utilizes 6000 cases from VitalDB for offline learning.
+- `--offline_epochs 30`: 30 epochs for Stage 1 (offline pre-training).
+- `--batch_size 128`: Batch size designated for stable optimization.
+- `--bc_weight 0.8`: Behavioral Cloning (BC) weight of 0.8 (mixing BC loss and RL loss).
+- `--use_cql False`: Disables Conservative Q-Learning since BC is preferred for imitation.
+- `--online_episodes 300`: 300 episodes for Stage 2 (online fine-tuning).
+- `--sampling_interval 60`: Reduces computational overhead by subsampling data dynamically.
+- `--smoothing_beta 0.8`: Enforces action-smoothing mechanism over output distributions (EMA factor).
 
 ## 🗄️ VitalDB Real Patient Data
 
@@ -196,29 +125,22 @@ QRL_Propofol_Infusion/
 │   ├── models/
 │   │   ├── vqc.py                    # Variational Quantum Circuit
 │   │   ├── networks.py               # LSTM/Transformer encoders
-│   │   ├── pharmacokinetics/         # Schnider + Minto models
-│   │   └── pharmacodynamics/         # Greco interaction model
+│   │   ├── neural_pkpd.py            # Neural PK/PD System ID
+│   │   ├── pharmacokinetics/         # Default PK models
+│   │   └── pharmacodynamics/         # Default PD models
 │   ├── agents/
 │   │   ├── quantum_agent.py          # Quantum DDPG
-│   │   ├── quantum_ppo_agent.py      # Quantum PPO
-│   │   ├── classical_agent.py        # Classical DDPG
-│   │   └── classical_ppo_agent.py    # Classical PPO
+│   │   └── classical_agent.py        # Classical DDPG
 │   └── data/
-│       └── vitaldb_loader.py         # VitalDB data loading
+│       ├── vitaldb_loader.py         # VitalDB data loading
+│       └── vitaldb_loader_remi.py    # Combined Propofol/Remi data loader
 ├── experiments/
-│   ├── train_offline.py              # Offline RL (BC/CQL)
-│   ├── train_hybrid.py               # 2-stage training (DDPG)
-│   ├── train_hybrid_ppo.py           # 2-stage training (PPO)
-│   ├── train_quantum.py              # Pure online quantum DDPG
-│   ├── train_classical.py            # Pure online classical DDPG
-│   ├── train_ppo.py                  # Pure online PPO
-│   ├── compare_quantum_vs_classical.py
-│   ├── compare_quantum_vs_classical_dualdrug.py
-│   └── compare_ddpg_vs_ppo.py
+│   ├── compare_quantum_vs_classical.py # Main train & eval script
+│   ├── train_hybrid.py               # 2-stage training logic
+│   └── plot_training_results.py      # Plotting utilities
 ├── data/
-│   ├── vitaldb_cache/                # Raw VitalDB data
-│   └── offline_dataset/              # Preprocessed datasets
-└── logs/                             # Training logs
+│   └── vitaldb_cache/                # Raw VitalDB patient data
+└── logs/                             # Checkpoints and trajectories
 ```
 
 ## 🔬 Key Algorithms
@@ -310,7 +232,7 @@ offline:
 
 ## 🔧 Dependencies
 
-- Python >= 3.9
+- Python >= 3.12.4
 - PennyLane >= 0.33.0 (Quantum computing)
 - PyTorch >= 2.0.0 (Deep learning)
 - Gymnasium >= 0.29.0 (RL environment)
@@ -318,27 +240,6 @@ offline:
 - NumPy, SciPy, Matplotlib, pandas
 
 See `requirements.txt` for complete list.
-
-## 📝 Citation
-
-```bibtex
-@software{qrl_propofol,
-  title = {Quantum Reinforcement Learning for Propofol Infusion Control},
-  author = {QRL Propofol Team},
-  year = {2024},
-  url = {https://github.com/2Ho0/QRL_Propofol_Infusion}
-}
-
-@article{lee2022vitaldb,
-  title={VitalDB, a high-fidelity multi-parameter vital signs database in surgical patients},
-  author={Lee, Hyung-Chul and Jung, Chul-Woo},
-  journal={Scientific Data},
-  volume={9},
-  number={1},
-  pages={279},
-  year={2022}
-}
-```
 
 ## 📄 License
 

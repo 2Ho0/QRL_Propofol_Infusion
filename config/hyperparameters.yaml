@@ -92,7 +92,7 @@ pkpd_model:
 # Quantum Circuit Configuration
 # =============================================================================
 quantum:
-  n_qubits: 3                 # Number of qubits (increased for 13D state)
+  n_qubits: 2                 # Number of qubits = action_dim (1 qubit per drug: propofol, remifentanil)
   n_layers: 4                 # Number of variational layers
   
   # Encoding Strategy
@@ -102,9 +102,9 @@ quantum:
   device: "default.qubit"     # PennyLane device
   shots: null                 # null for analytic simulation
   
-  # Feature Selection for 3-qubit encoding
+  # Feature Selection for 2-qubit encoding
   # Indices of state features to encode (from encoded representation)
-  feature_indices: [0, 1, 2]
+  feature_indices: [0, 1]
   
   # Action mapping
   action_scale: 30.0          # Max propofol dose for action scaling (mg/kg/h)
@@ -152,7 +152,7 @@ networks:
   encoder:
     hidden_dims: [64, 32]
     activation: "relu"
-    output_dim: 3             # Must match n_qubits for angle encoding
+    output_dim: 2             # Must match n_qubits for angle encoding
     
   # BIS Predictor Network per (48)
   bis_predictor:

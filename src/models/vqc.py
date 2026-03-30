@@ -7,18 +7,23 @@ with JAX backend for the quantum policy network in the Quantum RL Propofol contr
 
 Architecture:
 -------------
-1. State Encoding: Angle embedding of state features onto qubits
+1. Classical Encoder: State(13D) → n_qubits features  (state 압축, n_qubits = action_dim)
 2. Variational Layers: Parameterized rotation gates (RY, RZ) with entanglement (CNOT)
-3. Measurement: Expectation values of Pauli-Z operators
+3. Measurement: Expectation values of Pauli-Z operators → n_qubits measurements
+4. Output Scaling: n_qubits measurements → action_dim via Linear + Sigmoid
 
-The circuit maps classical state features to a quantum-enhanced action
-through variational quantum optimization.
+Design Rationale (n_qubits == action_dim):
+------------------------------------------
+Dual drug control의 action_dim=2 (Propofol, Remifentanil)에 맞춰 n_qubits=2로 설정.
+각 큐빗이 하나의 약물 출력에 대응하는 자연스러운 1:1 매핑 구조.
+  - Qubit 0 → 측정값 → Propofol 제어량
+  - Qubit 1 → 측정값 → Remifentanil 제어량
 
 For 2 Qubits:
-- Input: 2 state features (BIS_error_normalized, Ce_normalized)
+- Input: 13D state → Classical Encoder → 2 features (n_qubits=2)
 - Encoding: Angle embedding RX(feature * π)
-- Layers: RY-RZ rotations + CNOT entanglement
-- Output: Expectation value mapped to action [0, 1]
+- Layers: RY-RZ rotations + CNOT entanglement (circular)
+- Output: [expval(Z_0), expval(Z_1)] → Linear → [propofol_action, remifentanil_action]
 
 JAX Backend:
 -------------
@@ -252,16 +257,16 @@ class VariationalQuantumCircuit:
     Variational Quantum Circuit for continuous action output.
     
     This class implements a parameterized quantum circuit that takes
-    encoded state features and outputs an expectation value that
-    can be mapped to a continuous action.
+    encoded state features and outputs expectation values that
+    can be mapped to continuous actions.
     
-    Architecture for 2 qubits:
-    |0⟩ ─ RX(θ_in[0]) ─ RY(θ[0]) ─ RZ(θ[1]) ─●─ RY(θ[4]) ─ RZ(θ[5]) ─ M
+    Architecture for 2 qubits (n_qubits == action_dim):
+    |0⟩ ─ RX(θ_in[0]) ─ RY(θ[0]) ─ RZ(θ[1]) ─●─ RY(θ[4]) ─ RZ(θ[5]) ─ M → propofol
                                               │
-    |0⟩ ─ RX(θ_in[1]) ─ RY(θ[2]) ─ RZ(θ[3]) ─⊕─ RY(θ[6]) ─ RZ(θ[7]) ─ M
+    |0⟩ ─ RX(θ_in[1]) ─ RY(θ[2]) ─ RZ(θ[3]) ─⊕─ RY(θ[6]) ─ RZ(θ[7]) ─ M → remifentanil
     
     Attributes:
-        n_qubits: Number of qubits (fixed at 2)
+        n_qubits: Number of qubits (= action_dim, 1 qubit per drug)
         n_layers: Number of variational layers
         dev: PennyLane quantum device
         weight_shapes: Shape of variational parameters
@@ -307,155 +312,172 @@ class VariationalQuantumCircuit:
         self._create_qnode()
     
     def _create_qnode(self):
-        """Create the PennyLane QNode for the VQC with JAX interface."""
+        """
+        Create the PennyLane QNode with Data Re-Uploading strategy.
+        
+        Unlike standard VQC (encode once → variational layers),
+        Data Re-Uploading encodes the input AT EVERY LAYER.
+        This allows the VQC to process different projections of the
+        Transformer embedding at each depth, dramatically increasing
+        expressibility without adding more qubits.
+        
+        Reference: Perez-Salinas et al., "Data re-uploading for a universal
+        quantum classifier", Quantum 4, 226 (2020)
+        """
         
         @qml.qnode(self.dev, interface="jax", diff_method="backprop")
-        def circuit(inputs, weights):
+        def circuit(layer_inputs, weights):
             """
-            Variational quantum circuit with JAX.
+            Data Re-Uploading VQC: encodes embedding at EVERY layer.
             
             Args:
-                inputs: Input features to encode (shape: [n_qubits])
+                layer_inputs: Per-layer projected features (shape: [n_layers, n_qubits])
+                              layer_inputs[l] = projection_l(transformer_embedding)
+                              Each layer receives a DIFFERENT linear projection
+                              of the same Transformer embedding.
                 weights: Variational parameters (shape: [n_layers, n_qubits, 2])
             
             Returns:
-                Expectation value of Pauli-Z on first qubit
+                Expectation values of Pauli-Z on all qubits
             """
-            # Input encoding using angle embedding
-            # Scale inputs to [0, π] range for rotation gates
-            for i in range(self.n_qubits):
-                # Encode feature as rotation angle
-                qml.RX(inputs[i] * jnp.pi, wires=i)
-            
-            # Variational layers
             for layer in range(self.n_layers):
-                # Single-qubit rotations
+                # === Data Re-Uploading ===
+                # Each layer encodes its own specific view of the embedding
+                # via RX(projection_l[i] * π) angle encoding
+                for i in range(self.n_qubits):
+                    qml.RX(layer_inputs[layer, i] * jnp.pi, wires=i)
+                
+                # Variational rotations (learned parameters)
                 for qubit in range(self.n_qubits):
                     qml.RY(weights[layer, qubit, 0], wires=qubit)
                     qml.RZ(weights[layer, qubit, 1], wires=qubit)
                 
-                # Entangling layer (CNOT cascade)
+                # Entangling layer (circular CNOT)
                 for qubit in range(self.n_qubits - 1):
                     qml.CNOT(wires=[qubit, qubit + 1])
-                
-                # Circular entanglement for 2+ qubits
                 if self.n_qubits > 1:
                     qml.CNOT(wires=[self.n_qubits - 1, 0])
             
-            # Measurement: expectation values of Z on ALL qubits for multi-action output
-            # Returns [expval(Z_0), expval(Z_1), ...] for n_qubits
+            # Measurement: Pauli-Z expectation on all qubits
             return [qml.expval(qml.PauliZ(i)) for i in range(self.n_qubits)]
         
-        # JIT compile the circuit for faster execution
+        # JIT compile for speed
         self.circuit = jit(circuit)
-        
-        # Create vectorized version for batch processing
+        # Vectorized version: vmap over batch dim (in_axes=(0, None) → batch layer_inputs, shared weights)
         self.circuit_batch = jit(vmap(circuit, in_axes=(0, None)))
     
     def forward(
-        self, 
-        inputs: torch.Tensor, 
+        self,
+        layer_inputs: torch.Tensor,
         weights: torch.Tensor
     ) -> torch.Tensor:
         """
-        Forward pass through the VQC with JAX backend and PyTorch gradient support.
+        Forward pass through the Data Re-Uploading VQC.
         
         Args:
-            inputs: Input features (shape: [batch_size, n_qubits] or [n_qubits])
+            layer_inputs: Per-layer projected features
+                          shape: [n_layers, n_qubits]       for single sample
+                                 [batch, n_layers, n_qubits] for batch
             weights: Variational parameters (shape: [n_layers, n_qubits, 2])
         
         Returns:
-            Expectation values (shape: [batch_size] or scalar)
+            PauliZ expectation values
+            shape: [n_qubits] for single, [batch, n_qubits] for batch
         """
-        # Handle batched inputs
-        if inputs.dim() == 1:
-            # Single input - use custom autograd function
-            return JAXCircuitFunction.apply(self.circuit, inputs, weights)
-        else:
-            # Batch processing with vectorized circuit
-            return JAXCircuitBatchFunction.apply(self.circuit_batch, inputs, weights)
+        if layer_inputs.dim() == 2:  # [n_layers, n_qubits] - single sample
+            return JAXCircuitFunction.apply(self.circuit, layer_inputs, weights)
+        else:  # [batch, n_layers, n_qubits]
+            return JAXCircuitBatchFunction.apply(self.circuit_batch, layer_inputs, weights)
     
     def get_initial_weights(self, seed: Optional[int] = None) -> torch.Tensor:
         """
-        Get randomly initialized weights.
-        
-        Args:
-            seed: Random seed for initialization
+        Get randomly initialized variational weights.
         
         Returns:
-            Initialized weight tensor
+            Initialized weight tensor [n_layers, n_qubits, 2]
         """
         if seed is not None:
             torch.manual_seed(seed)
-        
-        # Initialize weights uniformly in [0, 2π]
         weights = torch.rand(self.n_layers, self.n_qubits, 2) * 2 * np.pi
         weights.requires_grad = True
         return weights
     
-    def draw(self, inputs: Optional[np.ndarray] = None) -> str:
+    def draw(self) -> str:
         """
-        Draw the quantum circuit.
+        Draw the quantum circuit (Data Re-Uploading structure).
         
         Returns:
             String representation of the circuit
         """
-        if inputs is None:
-            inputs = np.zeros(self.n_qubits)
-        
+        # layer_inputs: [n_layers, n_qubits] for drawing
+        layer_inputs = np.zeros((self.n_layers, self.n_qubits))
         weights = self.get_initial_weights().detach().numpy()
         
-        # Convert to JAX arrays for circuit drawing
-        inputs_jax = jnp.array(inputs, dtype=jnp.float32)
+        layer_inputs_jax = jnp.array(layer_inputs, dtype=jnp.float32)
         weights_jax = jnp.array(weights, dtype=jnp.float32)
         
-        # Use qml.draw
         drawer = qml.draw(self.circuit)
-        return drawer(inputs_jax, weights_jax)
+        return drawer(layer_inputs_jax, weights_jax)
 
 
 class QuantumPolicy(nn.Module):
     """
-    Hybrid Quantum-Classical Policy Network.
-    
-    This network combines a classical state encoder with a VQC
-    to produce continuous actions for propofol infusion control.
+    Hybrid Quantum-Classical Policy Network with Data Re-Uploading.
     
     Architecture:
-    1. Classical Encoder: Maps full state to 2 features for qubits
-    2. VQC: Variational quantum circuit for policy
-    3. Output Scaling: Maps VQC output [-1, 1] to action [0, 1]
+    ─────────────────────────────────────────────────────────────
+    State (Transformer embedding, state_dim D)
+      │
+      ├─ layer_proj_0(state_dim → n_qubits) ─▶ RX encoding ─▶ VQC Layer 0
+      ├─ layer_proj_1(state_dim → n_qubits) ─▶ RX encoding ─▶ VQC Layer 1
+      ├─ layer_proj_2(state_dim → n_qubits) ─▶ RX encoding ─▶ VQC Layer 2
+      └─ layer_proj_3(state_dim → n_qubits) ─▶ RX encoding ─▶ VQC Layer 3
+                                                                     │
+                                                    PauliZ 측정 [n_qubits 개]
+                                                                     │
+                                              Linear(n_qubits → action_dim) + Sigmoid
+                                                                     │
+                                                        Action [propofol, remifentanil]
+    ─────────────────────────────────────────────────────────────
+    
+    Design Rationale (Data Re-Uploading):
+        기존 단일 encoder MLP(state_dim → 2D 병목)를 제거하고,
+        VQC의 각 레이어마다 독립적인 linear projection을 사용.
+        → 레이어 l은 projection_l(embedding)로 임베딩의 다른 측면을 학습
+        → 2 큐빗으로도 n_layers 번 다른 관점에서 임베딩을 처리 가능
+        → Universal Approximator 성질 유지 (Perez-Salinas et al., 2020)
     
     Attributes:
-        encoder: Classical neural network encoder
-        vqc: Variational quantum circuit
+        layer_projections: n_layers개의 독립 projection (state_dim → n_qubits)
+        vqc: Variational quantum circuit (Data Re-Uploading 적용)
         weights: Variational parameters (learned)
-        action_scale: Maximum action value
+        output_scale: Final action mapping (n_qubits → action_dim)
     """
     
     def __init__(
         self,
-        state_dim: int = 4,
+        state_dim: int = 32,      # Transformer encoder output dim
         n_qubits: int = 2,
         n_layers: int = 4,
-        encoder_hidden: List[int] = [64, 32],
         action_scale: float = 1.0,
-        action_dim: int = 1,
+        action_dim: int = 2,
         device_name: str = "default.qubit",
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
+        # Backward-compatible: encoder_hidden is accepted but ignored
+        encoder_hidden: Optional[List[int]] = None
     ):
         """
-        Initialize the quantum policy.
+        Initialize the Data Re-Uploading Quantum Policy.
         
         Args:
-            state_dim: Dimension of input state
-            n_qubits: Number of qubits in VQC
-            n_layers: Number of VQC layers
-            encoder_hidden: Hidden layer sizes for encoder
+            state_dim: Transformer embedding dimension (input to QuantumPolicy)
+            n_qubits: Number of qubits (= action_dim for 1:1 drug mapping)
+            n_layers: Number of VQC layers (= number of re-uploading steps)
             action_scale: Scale for output action
             action_dim: Dimension of action output
             device_name: PennyLane device name
             seed: Random seed
+            encoder_hidden: Deprecated, kept for backward compatibility
         """
         super().__init__()
         
@@ -465,61 +487,55 @@ class QuantumPolicy(nn.Module):
         self.action_scale = action_scale
         self.action_dim = action_dim
         
-        # Classical encoder: state_dim -> n_qubits features
-        encoder_layers = []
-        prev_dim = state_dim
-        for hidden_dim in encoder_hidden:
-            encoder_layers.append(nn.Linear(prev_dim, hidden_dim))
-            encoder_layers.append(nn.ReLU())
-            prev_dim = hidden_dim
-        encoder_layers.append(nn.Linear(prev_dim, n_qubits))
-        encoder_layers.append(nn.Tanh())  # Output in [-1, 1] for encoding
+        # ── Per-Layer Projection (Data Re-Uploading의 핵심) ──────────────────
+        # 기존 단일 bottleneck encoder(state_dim → 2D)를 n_layers개의 독립
+        # projection으로 대체. 각 레이어가 임베딩의 다른 측면을 학습.
+        # 구조: Linear(state_dim → state_dim) + GELU + Linear(state_dim → n_qubits) + Tanh
+        # Tanh: RX 각도 인코딩을 위해 출력을 [-1, 1]로 제한
+        self.layer_projections = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(state_dim, state_dim),
+                nn.GELU(),
+                nn.Linear(state_dim, n_qubits),
+                nn.Tanh()   # 출력 ∈ [-1, 1] → RX(x * π) 각도 인코딩
+            )
+            for _ in range(n_layers)
+        ])
         
-        self.encoder = nn.Sequential(*encoder_layers)
-        
-        # VQC
+        # ── Variational Quantum Circuit ───────────────────────────────────────
         self.vqc = VariationalQuantumCircuit(
             n_qubits=n_qubits,
             n_layers=n_layers,
             device=device_name
         )
         
-        # Variational parameters
+        # ── Variational Parameters (훈련 가능한 VQC 가중치) ──────────────────
         if seed is not None:
             torch.manual_seed(seed)
         self.weights = nn.Parameter(
             torch.rand(n_layers, n_qubits, 2) * 2 * np.pi
         )
         
-        # Output scaling layer - direct mapping from n_qubits measurements to actions
-        # VQC outputs n_qubits values in [-1, 1], map to [0, 1] for each action
+        # ── Output Scaling ────────────────────────────────────────────────────
+        # PauliZ 측정값 [n_qubits] → action [action_dim]
+        # Qubit 0 → Propofol, Qubit 1 → Remifentanil
         output_layer = nn.Linear(n_qubits, self.action_dim)
-        
-        # Initialize bias to match VitalDB data distribution
-        # For dual drug with induction phase:
-        #   - Combined data mean: ~0.5 (induction + maintenance mixed)
-        #   - Induction mean: ~0.75 for propofol, ~0.6 for remifentanil
-        #   - Maintenance mean: ~0.05 for both drugs
-        # Use sigmoid(0) = 0.5 as starting point for better learning
-        # This allows the network to easily adjust up (induction) or down (maintenance)
-        nn.init.constant_(output_layer.bias, 0.0)  # sigmoid(0) = 0.5
-        
+        nn.init.constant_(output_layer.bias, 0.0)  # sigmoid(0) = 0.5 시작점
         self.output_scale = nn.Sequential(
             output_layer,
-            nn.Sigmoid()  # Output in [0, 1]
+            nn.Sigmoid()  # Output ∈ [0, 1]
         )
     
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass to compute action from state.
+        Forward pass with Data Re-Uploading.
         
         Args:
-            state: State tensor (shape: [batch_size, state_dim] or [state_dim])
+            state: Transformer embedding [batch_size, state_dim] or [state_dim]
         
         Returns:
-            Action tensor (shape: [batch_size, 1] or [1])
+            Action tensor [batch_size, action_dim] or [action_dim]
         """
-        # Ensure state is 2D
         if state.dim() == 1:
             state = state.unsqueeze(0)
             squeeze_output = True
@@ -528,26 +544,27 @@ class QuantumPolicy(nn.Module):
         
         batch_size = state.shape[0]
         
-        # Encode state to qubit features
-        encoded = self.encoder(state)  # [batch_size, n_qubits]
+        # 각 레이어별 projection 계산: [batch, n_layers, n_qubits]
+        # layer_proj_l(state): 레이어 l이 바라보는 임베딩의 특정 2D 방향
+        layer_features = torch.stack(
+            [proj(state) for proj in self.layer_projections],
+            dim=1
+        )  # [batch, n_layers, n_qubits]
         
-        # Pass through VQC
-        # VQC now returns [n_qubits] expectation values for each sample
+        # Data Re-Uploading VQC 실행
         vqc_outputs = []
         for i in range(batch_size):
-            output = self.vqc.forward(encoded[i], self.weights)  # Returns [n_qubits] measurements
+            # layer_features[i]: [n_layers, n_qubits]
+            output = self.vqc.forward(layer_features[i], self.weights)
             vqc_outputs.append(output)
         
-        vqc_output = torch.stack(vqc_outputs)  # [batch_size, n_qubits]
+        vqc_output = torch.stack(vqc_outputs)  # [batch, n_qubits]
         
-        # Normalize VQC output from [-1, 1] to [0, 1]
-        normalized = (vqc_output + 1) / 2  # [batch_size, n_qubits]
+        # PauliZ 측정값 [-1, 1] → [0, 1] 정규화
+        normalized = ((vqc_output + 1) / 2).float()  # [batch, n_qubits]
         
-        # Convert to float32 to match network dtype
-        normalized = normalized.float()
-        
-        # Apply output scaling network: [batch_size, n_qubits] -> [batch_size, action_dim]
-        action = self.output_scale(normalized) * self.action_scale  # [batch_size, action_dim]
+        # 최종 액션 출력: [batch, n_qubits] → [batch, action_dim]
+        action = self.output_scale(normalized) * self.action_scale
         
         if squeeze_output:
             action = action.squeeze(0)
@@ -555,15 +572,15 @@ class QuantumPolicy(nn.Module):
         return action
     
     def get_action(
-        self, 
-        state: np.ndarray, 
+        self,
+        state: np.ndarray,
         deterministic: bool = True
     ) -> np.ndarray:
         """
         Get action from state for inference.
         
         Args:
-            state: State array
+            state: State array (Transformer embedding)
             deterministic: Whether to use deterministic policy
         
         Returns:
@@ -576,27 +593,33 @@ class QuantumPolicy(nn.Module):
     
     def get_quantum_circuit_info(self) -> Dict:
         """
-        Get information about the quantum circuit.
+        Get information about the Data Re-Uploading quantum circuit.
         
         Returns:
-            Dictionary with circuit information
+            Dictionary with circuit and parameter information
         """
+        n_proj_params = sum(
+            sum(p.numel() for p in proj.parameters())
+            for proj in self.layer_projections
+        )
         return {
             'n_qubits': self.n_qubits,
             'n_layers': self.n_layers,
-            'n_params': self.vqc.total_params,
+            'n_vqc_params': self.vqc.total_params,
+            'n_projection_params': n_proj_params,
+            'n_total_params': n_proj_params + self.vqc.total_params,
             'weight_shape': tuple(self.weights.shape),
+            'architecture': 'Data Re-Uploading + Per-Layer Projection',
             'circuit_diagram': self.vqc.draw()
         }
 
 
 class QuantumPolicySimple(nn.Module):
     """
-    Simplified Quantum Policy without classical encoder.
+    Simplified Quantum Policy with Data Re-Uploading (no classical encoder).
     
-    This version directly encodes the first 2 state features
-    into the quantum circuit without preprocessing.
-    Useful for testing and simpler experiments.
+    Useful for testing and ablation studies.
+    선택된 n_qubits개의 state feature를 각 레이어마다 직접 re-upload.
     """
     
     def __init__(
@@ -609,18 +632,6 @@ class QuantumPolicySimple(nn.Module):
         device_name: str = "default.qubit",
         seed: Optional[int] = None
     ):
-        """
-        Initialize simplified quantum policy.
-        
-        Args:
-            n_qubits: Number of qubits
-            n_layers: Number of VQC layers
-            action_scale: Scale for output action
-            action_dim: Dimension of action output
-            feature_indices: Which state features to encode
-            device_name: PennyLane device
-            seed: Random seed
-        """
         super().__init__()
         
         self.n_qubits = n_qubits
@@ -629,14 +640,12 @@ class QuantumPolicySimple(nn.Module):
         self.action_dim = action_dim
         self.feature_indices = feature_indices
         
-        # VQC
         self.vqc = VariationalQuantumCircuit(
             n_qubits=n_qubits,
             n_layers=n_layers,
             device=device_name
         )
         
-        # Variational parameters
         if seed is not None:
             torch.manual_seed(seed)
         self.weights = nn.Parameter(
@@ -645,7 +654,7 @@ class QuantumPolicySimple(nn.Module):
     
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass.
+        Forward pass with Data Re-Uploading (same features repeated each layer).
         
         Args:
             state: State tensor
@@ -653,7 +662,6 @@ class QuantumPolicySimple(nn.Module):
         Returns:
             Action tensor
         """
-        # Ensure 2D
         if state.dim() == 1:
             state = state.unsqueeze(0)
             squeeze_output = True
@@ -662,26 +670,23 @@ class QuantumPolicySimple(nn.Module):
         
         batch_size = state.shape[0]
         
-        # Extract features for encoding
-        features = state[:, self.feature_indices]  # [batch_size, n_qubits]
+        # 선택된 feature 추출 및 정규화
+        features = torch.tanh(state[:, self.feature_indices])  # [batch, n_qubits]
         
-        # Normalize features to [-1, 1] for encoding
-        features = torch.tanh(features)
+        # Data Re-Uploading: 동일한 features를 n_layers번 반복 encode
+        # layer_inputs: [batch, n_layers, n_qubits]
+        layer_inputs = features.unsqueeze(1).expand(-1, self.n_layers, -1)
         
-        # Pass through VQC
         vqc_outputs = []
         for i in range(batch_size):
-            output = self.vqc.forward(features[i], self.weights)  # Returns [n_qubits] measurements
+            output = self.vqc.forward(layer_inputs[i], self.weights)
             vqc_outputs.append(output)
         
-        vqc_output = torch.stack(vqc_outputs)  # [batch_size, n_qubits]
+        vqc_output = torch.stack(vqc_outputs)  # [batch, n_qubits]
         
-        # Map [-1, 1] to [0, action_scale]
-        # Take mean of all qubit measurements for single action, or map to multi-action
         if self.action_dim == 1:
             action = ((vqc_output.mean(dim=1, keepdim=True) + 1) / 2) * self.action_scale
         else:
-            # For multi-action, use first action_dim qubits
             action = ((vqc_output[:, :self.action_dim] + 1) / 2) * self.action_scale
         
         if squeeze_output:
@@ -691,52 +696,57 @@ class QuantumPolicySimple(nn.Module):
 
 
 if __name__ == "__main__":
-    # Test the VQC and policies
-    print("Testing Variational Quantum Circuit...")
+    print("Testing Data Re-Uploading VQC...")
     
-    # Create VQC
+    # ── VQC 단독 테스트 ──────────────────────────────────────────────
     vqc = VariationalQuantumCircuit(n_qubits=2, n_layers=4)
-    print(f"VQC created with {vqc.total_params} parameters")
+    print(f"VQC created with {vqc.total_params} variational parameters")
     
-    # Test forward pass
-    inputs = torch.tensor([0.5, -0.3])
+    # layer_inputs: [n_layers, n_qubits]
+    layer_inputs = torch.rand(4, 2) * 2 - 1  # uniform in [-1, 1]
     weights = vqc.get_initial_weights()
-    output = vqc.forward(inputs, weights)
-    print(f"VQC output shape: {output.shape}")
-    print(f"VQC output: {output}")
+    output = vqc.forward(layer_inputs, weights)
+    print(f"VQC output (single): {output}")
     
-    # Draw circuit
-    print("\nQuantum Circuit:")
+    # 배치 테스트: [batch, n_layers, n_qubits]
+    batch_layer_inputs = torch.rand(8, 4, 2) * 2 - 1
+    batch_output = vqc.forward(batch_layer_inputs, weights)
+    print(f"VQC output (batch): {batch_output.shape}")
+    
+    print("\nQuantum Circuit (Data Re-Uploading):")
     print(vqc.draw())
     
-    # Test QuantumPolicy
+    # ── QuantumPolicy 테스트 ─────────────────────────────────────────
     print("\n" + "="*50)
-    print("Testing QuantumPolicy...")
+    print("Testing QuantumPolicy (Data Re-Uploading + Per-Layer Projection)...")
     
+    # state_dim=32: Transformer encoder 출력 차원 (예시)
     policy = QuantumPolicy(
-        state_dim=4,
+        state_dim=32,
         n_qubits=2,
         n_layers=4,
-        encoder_hidden=[64, 32],
+        action_dim=2,
         seed=42
     )
     
-    # Test forward pass
-    state = torch.randn(4)
+    # 단일 샘플 테스트
+    state = torch.randn(32)
     action = policy.forward(state)
-    print(f"State: {state.numpy()}")
-    print(f"Action: {action.item():.4f}")
+    print(f"Action (single): {action.detach().numpy()}")
     
-    # Test batched forward
-    states = torch.randn(8, 4)
+    # 배치 테스트
+    states = torch.randn(8, 32)
     actions = policy.forward(states)
-    print(f"Batch actions shape: {actions.shape}")
+    print(f"Actions (batch) shape: {actions.shape}")
     
-    # Get circuit info
+    # 회로 정보
     info = policy.get_quantum_circuit_info()
     print(f"\nCircuit Info:")
+    print(f"  Architecture: {info['architecture']}")
     print(f"  Qubits: {info['n_qubits']}")
     print(f"  Layers: {info['n_layers']}")
-    print(f"  Parameters: {info['n_params']}")
+    print(f"  VQC params: {info['n_vqc_params']}")
+    print(f"  Projection params: {info['n_projection_params']}")
+    print(f"  Total params: {info['n_total_params']}")
     
     print("\nTest complete!")

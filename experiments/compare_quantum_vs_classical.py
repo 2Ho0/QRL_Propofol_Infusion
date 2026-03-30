@@ -28,7 +28,7 @@ Usage:
         --n_cases 100 --encoder transformer
 """
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import sys
 from pathlib import Path
@@ -103,7 +103,7 @@ def parse_args():
                        help='State dimension for dual drug (extended with demographics: age, sex, BMI)')
     parser.add_argument('--action_dim', type=int, default=2,
                        help='Action dimension (propofol + remifentanil)')
-    parser.add_argument('--n_qubits', type=int, default=3,
+    parser.add_argument('--n_qubits', type=int, default=2,
                        help='Number of qubits for quantum circuit (3 qubits for 13D state)')
     parser.add_argument('--encoder', type=str, default='transformer',
                        choices=['none', 'lstm', 'transformer'],
@@ -625,6 +625,17 @@ def main():
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
     config['device'] = str(device)
+    
+    # CLI --n_qubits가 config를 동적으로 override:
+    # - quantum.n_qubits: VQC 큐빗 수 (= action_dim, 큐빗 1개가 약물 1개에 대응)
+    # - networks.encoder.output_dim: QuantumPolicy 내부 Classical Encoder의 출력 차원
+    #   (반드시 n_qubits와 동일해야 VQC 입력 차원이 맞음)
+    config.setdefault('quantum', {})['n_qubits'] = args.n_qubits
+    config.setdefault('networks', {}).setdefault('encoder', {})['output_dim'] = args.n_qubits
+    
+    print(f"  n_qubits CLI override → quantum.n_qubits={args.n_qubits}, "
+          f"networks.encoder.output_dim={args.n_qubits}")
+
     
     # Setup directory
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

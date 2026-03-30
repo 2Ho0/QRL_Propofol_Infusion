@@ -631,9 +631,8 @@ class QuantumDDPGAgent:
             state_dim=policy_input_dim,
             n_qubits=n_qubits,
             n_layers=n_layers,
-            encoder_hidden=encoder_config.get('hidden_dims', [64, 32]),
             action_scale=1.0,  # Normalized to [0, 1]
-            action_dim=self.action_dim,  # Use agent's action_dim
+            action_dim=self.action_dim,
             device_name=quantum_config.get('device', 'default.qubit'),
             seed=self.seed
         )
@@ -643,9 +642,8 @@ class QuantumDDPGAgent:
             state_dim=policy_input_dim,
             n_qubits=n_qubits,
             n_layers=n_layers,
-            encoder_hidden=encoder_config.get('hidden_dims', [64, 32]),
             action_scale=1.0,
-            action_dim=self.action_dim,  # Use agent's action_dim
+            action_dim=self.action_dim,
             device_name=quantum_config.get('device', 'default.qubit'),
             seed=self.seed
         )

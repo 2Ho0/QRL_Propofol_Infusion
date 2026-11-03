@@ -1,0 +1,108 @@
+{
+  "status": "locked_before_campaign",
+  "plan": "docs/superpowers/plans/2026-10-21-v3-residual-qrl.md",
+  "method": "bounded residual on the tuned PID, online TD3 only (D14-D17)",
+  "dataset_sha256": "d2fcd810b65de2901f0bb9a8d3a69b8bc1bfd02a15b56702cb619135ef8a5dca",
+  "split": {
+    "train": 2100,
+    "validation": 300,
+    "test": 600,
+    "split_seed": 1
+  },
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "phases": {
+    "primary": [
+      "quantum_full",
+      "classical_matched",
+      "quantum_disabled",
+      "classical_large"
+    ],
+    "aux_remi03": [
+      "quantum_full",
+      "classical_matched"
+    ],
+    "reviewer": [
+      "ansatz_realamplitudes",
+      "ansatz_efficientsu2",
+      "ansatz_twolocal",
+      "quantum_critic",
+      "fourier_surrogate"
+    ]
+  },
+  "residual": {
+    "pid_params_path": "C:\\Users\\mwill\\OneDrive\\Desktop\\AIM_Code\\DrugInfusion\\logs\\revision_v2\\pid_tuning\\selected_pid.json",
+    "pid_params_sha256": "ec03699ab94c538ea5f01eff34a55bb53d2374f37289e0721c46fa1e7701631e",
+    "range_main": "4.0,0.05",
+    "range_aux": "4.0,0.3",
+    "base_update": "once per 60-s control decision"
+  },
+  "reward": {
+    "dose_cost_weight": 0.03,
+    "smoothness_weight": 0.5
+  },
+  "training": {
+    "stage1": "none",
+    "online_episodes": 150,
+    "online_bc_weight": 0.0,
+    "actor_loss": "TD3 (-Q); --online_rl_scale has no effect without BC",
+    "action_prior_all_learned_arms": "0.5,0.5",
+    "action_prior_aux_remi03": "0.5,0.5",
+    "actor_learning_rates": {
+      "mlp": 0.0001,
+      "quantum_family": 0.001,
+      "selected_on": "validation patients, docs/experiments/2026-10-21_1600_v3_actor_lr_check.md"
+    }
+  },
+  "variability": {
+    "propofol_pk": {
+      "V1": 0.0404,
+      "V2": 0.01,
+      "V3": 0.1435,
+      "Cl1": 0.1005,
+      "Cl2": 0.01,
+      "Cl3": 0.1179,
+      "ke0": 0.0
+    },
+    "remifentanil_pk": {
+      "V1": 0.26,
+      "V2": 0.29,
+      "V3": 0.66,
+      "Cl1": 0.14,
+      "Cl2": 0.36,
+      "Cl3": 0.41,
+      "ke0": 0.0
+    },
+    "pd": {
+      "c50_ppf": 0.182,
+      "c50_rftn": 0.888,
+      "gamma": 0.304,
+      "e0": 0.0
+    },
+    "source": "Schnider 1998, Minto 1997, Bouillon 2004 (TCI concentrations); +/-2 SD",
+    "truncation_sd": 2.0
+  },
+  "primary_analysis": {
+    "unit": "one training run: mean MDAPE (measured BIS) over the 600 test patients",
+    "P1": "quantum_full vs pid_tuned: run means minus the deterministic PID mean; mean difference, 95% bootstrap CI over runs, exact Wilcoxon",
+    "P2": "quantum_full vs classical_matched, paired by seed (D10 statistics)",
+    "P3": "quantum_full vs quantum_disabled, paired by seed (D10 statistics)",
+    "multiplicity": "Holm over the three primary Wilcoxon p-values (alpha 0.05)",
+    "script": "experiments/analyze_v3_campaign.py"
+  },
+  "test_outcomes_used_for_selection": false,
+  "validation_gate": "docs/experiments/2026-10-21_1110_v3_validation_gate.md",
+  "code_fingerprint": "d79592f9aa53d214efb34874f83e6f17b6bc350b9eda116238061acd99618591",
+  "locked_utc": "2026-10-21T11:05:57.144214+00:00",
+  "git_head": "2952e9cbf931c2478634b242e3db953c12cef487"
+}

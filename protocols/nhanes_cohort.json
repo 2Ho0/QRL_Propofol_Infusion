@@ -1,0 +1,4227 @@
+{
+ "locked_at_utc": "2026-10-27T04:02:34.705704+00:00",
+ "source": "NHANES August 2021-August 2023 (CDC), DEMO_L.xpt and BMX_L.xpt",
+ "files_sha256": {
+  "BMX_L.xpt": "44440c416d9ad709e8b1708a5975378ab4d5b18edc39eb5015c2ae7186500170",
+  "DEMO_L.xpt": "ca4374a158b493b8b0163e1388da21d57a18d1b9cecff2aa4e2fa2bec494fe23"
+ },
+ "criteria": {
+  "age": [
+   18,
+   80
+  ],
+  "bmi": [
+   15.0,
+   35.0
+  ],
+  "measured weight and height": true
+ },
+ "sampling": "without replacement, probability proportional to WTMEC2YR",
+ "seed": 20261027,
+ "eligible": 5011,
+ "n": 600,
+ "caseids_sha256": "5a28fce07ab94ebc353b72686ab7bff778598f430519f27700bf00dbe7a6a465",
+ "outcomes_evaluated_during_lock": false,
+ "patients": [
+  {
+   "caseid": 130399,
+   "age": 68.0,
+   "sex": "M",
+   "weight": 70.8,
+   "height": 176.7
+  },
+  {
+   "caseid": 130400,
+   "age": 26.0,
+   "sex": "M",
+   "weight": 73.6,
+   "height": 160.3
+  },
+  {
+   "caseid": 130431,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 63.4,
+   "height": 145.7
+  },
+  {
+   "caseid": 130449,
+   "age": 26.0,
+   "sex": "F",
+   "weight": 99.6,
+   "height": 169.6
+  },
+  {
+   "caseid": 130473,
+   "age": 26.0,
+   "sex": "F",
+   "weight": 56.5,
+   "height": 158.1
+  },
+  {
+   "caseid": 130477,
+   "age": 50.0,
+   "sex": "M",
+   "weight": 68.2,
+   "height": 168.5
+  },
+  {
+   "caseid": 130515,
+   "age": 54.0,
+   "sex": "F",
+   "weight": 59.8,
+   "height": 157.1
+  },
+  {
+   "caseid": 130517,
+   "age": 30.0,
+   "sex": "M",
+   "weight": 74.4,
+   "height": 168.0
+  },
+  {
+   "caseid": 130577,
+   "age": 61.0,
+   "sex": "F",
+   "weight": 91.2,
+   "height": 167.9
+  },
+  {
+   "caseid": 130600,
+   "age": 42.0,
+   "sex": "M",
+   "weight": 86.7,
+   "height": 175.9
+  },
+  {
+   "caseid": 130617,
+   "age": 36.0,
+   "sex": "F",
+   "weight": 54.9,
+   "height": 157.7
+  },
+  {
+   "caseid": 130628,
+   "age": 22.0,
+   "sex": "M",
+   "weight": 66.9,
+   "height": 184.5
+  },
+  {
+   "caseid": 130629,
+   "age": 73.0,
+   "sex": "M",
+   "weight": 82.7,
+   "height": 175.8
+  },
+  {
+   "caseid": 130645,
+   "age": 47.0,
+   "sex": "F",
+   "weight": 55.4,
+   "height": 170.3
+  },
+  {
+   "caseid": 130656,
+   "age": 64.0,
+   "sex": "F",
+   "weight": 83.4,
+   "height": 157.6
+  },
+  {
+   "caseid": 130676,
+   "age": 25.0,
+   "sex": "F",
+   "weight": 54.7,
+   "height": 158.0
+  },
+  {
+   "caseid": 130766,
+   "age": 80.0,
+   "sex": "M",
+   "weight": 90.4,
+   "height": 172.1
+  },
+  {
+   "caseid": 130769,
+   "age": 22.0,
+   "sex": "M",
+   "weight": 80.7,
+   "height": 185.4
+  },
+  {
+   "caseid": 130771,
+   "age": 57.0,
+   "sex": "M",
+   "weight": 73.2,
+   "height": 187.0
+  },
+  {
+   "caseid": 130788,
+   "age": 39.0,
+   "sex": "M",
+   "weight": 74.2,
+   "height": 187.6
+  },
+  {
+   "caseid": 130829,
+   "age": 73.0,
+   "sex": "F",
+   "weight": 75.4,
+   "height": 158.0
+  },
+  {
+   "caseid": 130830,
+   "age": 62.0,
+   "sex": "M",
+   "weight": 76.0,
+   "height": 176.8
+  },
+  {
+   "caseid": 130847,
+   "age": 74.0,
+   "sex": "M",
+   "weight": 97.3,
+   "height": 169.8
+  },
+  {
+   "caseid": 130854,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 46.8,
+   "height": 144.5
+  },
+  {
+   "caseid": 130879,
+   "age": 30.0,
+   "sex": "F",
+   "weight": 80.3,
+   "height": 160.9
+  },
+  {
+   "caseid": 130890,
+   "age": 28.0,
+   "sex": "M",
+   "weight": 104.4,
+   "height": 176.8
+  },
+  {
+   "caseid": 130895,
+   "age": 34.0,
+   "sex": "F",
+   "weight": 55.5,
+   "height": 160.8
+  },
+  {
+   "caseid": 130932,
+   "age": 49.0,
+   "sex": "M",
+   "weight": 105.8,
+   "height": 181.7
+  },
+  {
+   "caseid": 130978,
+   "age": 75.0,
+   "sex": "M",
+   "weight": 113.1,
+   "height": 185.2
+  },
+  {
+   "caseid": 130982,
+   "age": 71.0,
+   "sex": "F",
+   "weight": 90.3,
+   "height": 162.3
+  },
+  {
+   "caseid": 131001,
+   "age": 23.0,
+   "sex": "F",
+   "weight": 55.7,
+   "height": 165.2
+  },
+  {
+   "caseid": 131014,
+   "age": 73.0,
+   "sex": "M",
+   "weight": 80.6,
+   "height": 171.4
+  },
+  {
+   "caseid": 131038,
+   "age": 40.0,
+   "sex": "F",
+   "weight": 67.2,
+   "height": 156.4
+  },
+  {
+   "caseid": 131042,
+   "age": 60.0,
+   "sex": "F",
+   "weight": 75.6,
+   "height": 169.9
+  },
+  {
+   "caseid": 131046,
+   "age": 43.0,
+   "sex": "M",
+   "weight": 82.4,
+   "height": 185.9
+  },
+  {
+   "caseid": 131058,
+   "age": 55.0,
+   "sex": "M",
+   "weight": 84.0,
+   "height": 172.7
+  },
+  {
+   "caseid": 131070,
+   "age": 39.0,
+   "sex": "M",
+   "weight": 86.1,
+   "height": 178.0
+  },
+  {
+   "caseid": 131075,
+   "age": 61.0,
+   "sex": "M",
+   "weight": 65.1,
+   "height": 171.7
+  },
+  {
+   "caseid": 131124,
+   "age": 80.0,
+   "sex": "M",
+   "weight": 73.6,
+   "height": 172.5
+  },
+  {
+   "caseid": 131127,
+   "age": 54.0,
+   "sex": "M",
+   "weight": 83.8,
+   "height": 183.9
+  },
+  {
+   "caseid": 131180,
+   "age": 73.0,
+   "sex": "F",
+   "weight": 73.4,
+   "height": 158.0
+  },
+  {
+   "caseid": 131196,
+   "age": 23.0,
+   "sex": "M",
+   "weight": 86.5,
+   "height": 171.3
+  },
+  {
+   "caseid": 131220,
+   "age": 35.0,
+   "sex": "M",
+   "weight": 90.5,
+   "height": 186.6
+  },
+  {
+   "caseid": 131283,
+   "age": 24.0,
+   "sex": "M",
+   "weight": 107.4,
+   "height": 188.0
+  },
+  {
+   "caseid": 131293,
+   "age": 51.0,
+   "sex": "F",
+   "weight": 75.1,
+   "height": 155.6
+  },
+  {
+   "caseid": 131302,
+   "age": 56.0,
+   "sex": "F",
+   "weight": 85.8,
+   "height": 161.2
+  },
+  {
+   "caseid": 131305,
+   "age": 23.0,
+   "sex": "M",
+   "weight": 86.6,
+   "height": 185.4
+  },
+  {
+   "caseid": 131310,
+   "age": 45.0,
+   "sex": "M",
+   "weight": 115.6,
+   "height": 187.6
+  },
+  {
+   "caseid": 131363,
+   "age": 39.0,
+   "sex": "F",
+   "weight": 62.0,
+   "height": 168.9
+  },
+  {
+   "caseid": 131365,
+   "age": 63.0,
+   "sex": "F",
+   "weight": 71.8,
+   "height": 158.7
+  },
+  {
+   "caseid": 131392,
+   "age": 59.0,
+   "sex": "M",
+   "weight": 81.8,
+   "height": 182.2
+  },
+  {
+   "caseid": 131401,
+   "age": 35.0,
+   "sex": "F",
+   "weight": 65.5,
+   "height": 163.4
+  },
+  {
+   "caseid": 131423,
+   "age": 77.0,
+   "sex": "M",
+   "weight": 68.3,
+   "height": 166.6
+  },
+  {
+   "caseid": 131446,
+   "age": 50.0,
+   "sex": "F",
+   "weight": 97.4,
+   "height": 167.1
+  },
+  {
+   "caseid": 131453,
+   "age": 27.0,
+   "sex": "M",
+   "weight": 86.2,
+   "height": 175.7
+  },
+  {
+   "caseid": 131469,
+   "age": 21.0,
+   "sex": "M",
+   "weight": 94.7,
+   "height": 178.9
+  },
+  {
+   "caseid": 131542,
+   "age": 31.0,
+   "sex": "M",
+   "weight": 70.9,
+   "height": 180.7
+  },
+  {
+   "caseid": 131583,
+   "age": 57.0,
+   "sex": "M",
+   "weight": 103.1,
+   "height": 177.0
+  },
+  {
+   "caseid": 131597,
+   "age": 42.0,
+   "sex": "M",
+   "weight": 68.1,
+   "height": 163.1
+  },
+  {
+   "caseid": 131602,
+   "age": 75.0,
+   "sex": "F",
+   "weight": 51.4,
+   "height": 160.5
+  },
+  {
+   "caseid": 131616,
+   "age": 41.0,
+   "sex": "M",
+   "weight": 78.7,
+   "height": 176.5
+  },
+  {
+   "caseid": 131620,
+   "age": 47.0,
+   "sex": "M",
+   "weight": 79.8,
+   "height": 187.3
+  },
+  {
+   "caseid": 131628,
+   "age": 72.0,
+   "sex": "M",
+   "weight": 73.3,
+   "height": 161.2
+  },
+  {
+   "caseid": 131642,
+   "age": 53.0,
+   "sex": "F",
+   "weight": 68.9,
+   "height": 172.9
+  },
+  {
+   "caseid": 131647,
+   "age": 32.0,
+   "sex": "M",
+   "weight": 85.5,
+   "height": 172.6
+  },
+  {
+   "caseid": 131650,
+   "age": 30.0,
+   "sex": "M",
+   "weight": 94.6,
+   "height": 185.6
+  },
+  {
+   "caseid": 131657,
+   "age": 20.0,
+   "sex": "M",
+   "weight": 83.3,
+   "height": 188.5
+  },
+  {
+   "caseid": 131676,
+   "age": 42.0,
+   "sex": "M",
+   "weight": 97.0,
+   "height": 173.3
+  },
+  {
+   "caseid": 131707,
+   "age": 48.0,
+   "sex": "F",
+   "weight": 85.3,
+   "height": 163.4
+  },
+  {
+   "caseid": 131711,
+   "age": 53.0,
+   "sex": "M",
+   "weight": 100.0,
+   "height": 176.2
+  },
+  {
+   "caseid": 131729,
+   "age": 66.0,
+   "sex": "M",
+   "weight": 78.9,
+   "height": 172.5
+  },
+  {
+   "caseid": 131804,
+   "age": 40.0,
+   "sex": "F",
+   "weight": 59.1,
+   "height": 161.8
+  },
+  {
+   "caseid": 131837,
+   "age": 59.0,
+   "sex": "M",
+   "weight": 72.7,
+   "height": 168.1
+  },
+  {
+   "caseid": 131841,
+   "age": 62.0,
+   "sex": "M",
+   "weight": 77.9,
+   "height": 163.5
+  },
+  {
+   "caseid": 131852,
+   "age": 20.0,
+   "sex": "M",
+   "weight": 111.8,
+   "height": 185.3
+  },
+  {
+   "caseid": 131874,
+   "age": 41.0,
+   "sex": "M",
+   "weight": 93.7,
+   "height": 175.3
+  },
+  {
+   "caseid": 131944,
+   "age": 59.0,
+   "sex": "F",
+   "weight": 56.1,
+   "height": 164.1
+  },
+  {
+   "caseid": 131947,
+   "age": 26.0,
+   "sex": "M",
+   "weight": 99.4,
+   "height": 176.8
+  },
+  {
+   "caseid": 131948,
+   "age": 34.0,
+   "sex": "F",
+   "weight": 50.2,
+   "height": 165.4
+  },
+  {
+   "caseid": 131958,
+   "age": 20.0,
+   "sex": "M",
+   "weight": 75.7,
+   "height": 171.9
+  },
+  {
+   "caseid": 131962,
+   "age": 44.0,
+   "sex": "F",
+   "weight": 72.4,
+   "height": 163.6
+  },
+  {
+   "caseid": 131979,
+   "age": 37.0,
+   "sex": "M",
+   "weight": 63.5,
+   "height": 160.9
+  },
+  {
+   "caseid": 131985,
+   "age": 44.0,
+   "sex": "F",
+   "weight": 86.7,
+   "height": 168.2
+  },
+  {
+   "caseid": 131990,
+   "age": 50.0,
+   "sex": "M",
+   "weight": 68.7,
+   "height": 176.6
+  },
+  {
+   "caseid": 131999,
+   "age": 19.0,
+   "sex": "F",
+   "weight": 64.4,
+   "height": 164.6
+  },
+  {
+   "caseid": 132001,
+   "age": 64.0,
+   "sex": "M",
+   "weight": 59.8,
+   "height": 158.6
+  },
+  {
+   "caseid": 132021,
+   "age": 62.0,
+   "sex": "M",
+   "weight": 91.5,
+   "height": 188.4
+  },
+  {
+   "caseid": 132029,
+   "age": 56.0,
+   "sex": "F",
+   "weight": 62.9,
+   "height": 159.1
+  },
+  {
+   "caseid": 132053,
+   "age": 34.0,
+   "sex": "M",
+   "weight": 105.0,
+   "height": 180.4
+  },
+  {
+   "caseid": 132124,
+   "age": 42.0,
+   "sex": "F",
+   "weight": 82.6,
+   "height": 154.1
+  },
+  {
+   "caseid": 132158,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 58.3,
+   "height": 155.7
+  },
+  {
+   "caseid": 132159,
+   "age": 68.0,
+   "sex": "M",
+   "weight": 68.4,
+   "height": 169.7
+  },
+  {
+   "caseid": 132172,
+   "age": 19.0,
+   "sex": "M",
+   "weight": 56.6,
+   "height": 165.1
+  },
+  {
+   "caseid": 132178,
+   "age": 67.0,
+   "sex": "M",
+   "weight": 87.0,
+   "height": 171.7
+  },
+  {
+   "caseid": 132182,
+   "age": 66.0,
+   "sex": "M",
+   "weight": 78.3,
+   "height": 176.6
+  },
+  {
+   "caseid": 132197,
+   "age": 70.0,
+   "sex": "F",
+   "weight": 70.3,
+   "height": 151.5
+  },
+  {
+   "caseid": 132202,
+   "age": 31.0,
+   "sex": "F",
+   "weight": 64.9,
+   "height": 163.0
+  },
+  {
+   "caseid": 132214,
+   "age": 76.0,
+   "sex": "M",
+   "weight": 74.0,
+   "height": 172.6
+  },
+  {
+   "caseid": 132219,
+   "age": 53.0,
+   "sex": "M",
+   "weight": 68.3,
+   "height": 163.1
+  },
+  {
+   "caseid": 132222,
+   "age": 27.0,
+   "sex": "M",
+   "weight": 73.9,
+   "height": 174.1
+  },
+  {
+   "caseid": 132243,
+   "age": 61.0,
+   "sex": "F",
+   "weight": 67.9,
+   "height": 154.3
+  },
+  {
+   "caseid": 132261,
+   "age": 80.0,
+   "sex": "M",
+   "weight": 70.0,
+   "height": 167.7
+  },
+  {
+   "caseid": 132273,
+   "age": 21.0,
+   "sex": "F",
+   "weight": 88.8,
+   "height": 175.8
+  },
+  {
+   "caseid": 132287,
+   "age": 61.0,
+   "sex": "M",
+   "weight": 104.2,
+   "height": 179.3
+  },
+  {
+   "caseid": 132311,
+   "age": 51.0,
+   "sex": "M",
+   "weight": 69.5,
+   "height": 174.9
+  },
+  {
+   "caseid": 132340,
+   "age": 60.0,
+   "sex": "M",
+   "weight": 88.7,
+   "height": 175.0
+  },
+  {
+   "caseid": 132350,
+   "age": 77.0,
+   "sex": "F",
+   "weight": 76.4,
+   "height": 148.6
+  },
+  {
+   "caseid": 132351,
+   "age": 27.0,
+   "sex": "F",
+   "weight": 61.8,
+   "height": 157.0
+  },
+  {
+   "caseid": 132359,
+   "age": 24.0,
+   "sex": "M",
+   "weight": 86.7,
+   "height": 184.8
+  },
+  {
+   "caseid": 132377,
+   "age": 45.0,
+   "sex": "M",
+   "weight": 66.0,
+   "height": 168.9
+  },
+  {
+   "caseid": 132421,
+   "age": 34.0,
+   "sex": "M",
+   "weight": 81.7,
+   "height": 175.1
+  },
+  {
+   "caseid": 132429,
+   "age": 32.0,
+   "sex": "M",
+   "weight": 78.3,
+   "height": 175.9
+  },
+  {
+   "caseid": 132439,
+   "age": 61.0,
+   "sex": "M",
+   "weight": 69.8,
+   "height": 176.6
+  },
+  {
+   "caseid": 132440,
+   "age": 37.0,
+   "sex": "M",
+   "weight": 83.4,
+   "height": 164.8
+  },
+  {
+   "caseid": 132451,
+   "age": 59.0,
+   "sex": "M",
+   "weight": 62.0,
+   "height": 165.2
+  },
+  {
+   "caseid": 132461,
+   "age": 19.0,
+   "sex": "M",
+   "weight": 67.6,
+   "height": 172.1
+  },
+  {
+   "caseid": 132547,
+   "age": 64.0,
+   "sex": "M",
+   "weight": 86.0,
+   "height": 171.0
+  },
+  {
+   "caseid": 132550,
+   "age": 62.0,
+   "sex": "F",
+   "weight": 54.2,
+   "height": 154.8
+  },
+  {
+   "caseid": 132638,
+   "age": 23.0,
+   "sex": "F",
+   "weight": 59.9,
+   "height": 162.4
+  },
+  {
+   "caseid": 132639,
+   "age": 22.0,
+   "sex": "M",
+   "weight": 99.8,
+   "height": 176.0
+  },
+  {
+   "caseid": 132652,
+   "age": 68.0,
+   "sex": "F",
+   "weight": 49.6,
+   "height": 153.1
+  },
+  {
+   "caseid": 132653,
+   "age": 29.0,
+   "sex": "M",
+   "weight": 98.7,
+   "height": 180.1
+  },
+  {
+   "caseid": 132667,
+   "age": 32.0,
+   "sex": "F",
+   "weight": 88.0,
+   "height": 163.8
+  },
+  {
+   "caseid": 132684,
+   "age": 43.0,
+   "sex": "F",
+   "weight": 69.6,
+   "height": 155.4
+  },
+  {
+   "caseid": 132690,
+   "age": 51.0,
+   "sex": "F",
+   "weight": 75.3,
+   "height": 160.8
+  },
+  {
+   "caseid": 132692,
+   "age": 44.0,
+   "sex": "M",
+   "weight": 68.7,
+   "height": 159.2
+  },
+  {
+   "caseid": 132699,
+   "age": 37.0,
+   "sex": "F",
+   "weight": 93.0,
+   "height": 170.5
+  },
+  {
+   "caseid": 132730,
+   "age": 68.0,
+   "sex": "F",
+   "weight": 90.6,
+   "height": 164.1
+  },
+  {
+   "caseid": 132787,
+   "age": 38.0,
+   "sex": "M",
+   "weight": 104.3,
+   "height": 177.8
+  },
+  {
+   "caseid": 132804,
+   "age": 70.0,
+   "sex": "F",
+   "weight": 91.0,
+   "height": 164.1
+  },
+  {
+   "caseid": 132814,
+   "age": 64.0,
+   "sex": "F",
+   "weight": 47.3,
+   "height": 152.3
+  },
+  {
+   "caseid": 132815,
+   "age": 30.0,
+   "sex": "M",
+   "weight": 111.1,
+   "height": 181.0
+  },
+  {
+   "caseid": 132835,
+   "age": 76.0,
+   "sex": "F",
+   "weight": 78.8,
+   "height": 166.6
+  },
+  {
+   "caseid": 132924,
+   "age": 80.0,
+   "sex": "M",
+   "weight": 64.6,
+   "height": 175.2
+  },
+  {
+   "caseid": 132931,
+   "age": 37.0,
+   "sex": "M",
+   "weight": 98.5,
+   "height": 175.2
+  },
+  {
+   "caseid": 132996,
+   "age": 51.0,
+   "sex": "M",
+   "weight": 108.6,
+   "height": 176.3
+  },
+  {
+   "caseid": 133025,
+   "age": 65.0,
+   "sex": "M",
+   "weight": 112.4,
+   "height": 180.2
+  },
+  {
+   "caseid": 133033,
+   "age": 58.0,
+   "sex": "F",
+   "weight": 83.3,
+   "height": 168.5
+  },
+  {
+   "caseid": 133077,
+   "age": 69.0,
+   "sex": "M",
+   "weight": 112.2,
+   "height": 183.5
+  },
+  {
+   "caseid": 133093,
+   "age": 61.0,
+   "sex": "F",
+   "weight": 53.3,
+   "height": 154.2
+  },
+  {
+   "caseid": 133095,
+   "age": 54.0,
+   "sex": "F",
+   "weight": 78.7,
+   "height": 162.2
+  },
+  {
+   "caseid": 133106,
+   "age": 66.0,
+   "sex": "F",
+   "weight": 71.7,
+   "height": 169.5
+  },
+  {
+   "caseid": 133115,
+   "age": 43.0,
+   "sex": "F",
+   "weight": 73.2,
+   "height": 161.1
+  },
+  {
+   "caseid": 133131,
+   "age": 55.0,
+   "sex": "F",
+   "weight": 60.0,
+   "height": 164.2
+  },
+  {
+   "caseid": 133134,
+   "age": 28.0,
+   "sex": "M",
+   "weight": 96.3,
+   "height": 179.4
+  },
+  {
+   "caseid": 133140,
+   "age": 52.0,
+   "sex": "F",
+   "weight": 69.7,
+   "height": 162.7
+  },
+  {
+   "caseid": 133172,
+   "age": 60.0,
+   "sex": "M",
+   "weight": 114.1,
+   "height": 189.5
+  },
+  {
+   "caseid": 133174,
+   "age": 39.0,
+   "sex": "M",
+   "weight": 73.5,
+   "height": 175.6
+  },
+  {
+   "caseid": 133178,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 65.6,
+   "height": 156.2
+  },
+  {
+   "caseid": 133202,
+   "age": 30.0,
+   "sex": "M",
+   "weight": 99.8,
+   "height": 192.4
+  },
+  {
+   "caseid": 133225,
+   "age": 58.0,
+   "sex": "F",
+   "weight": 85.5,
+   "height": 159.8
+  },
+  {
+   "caseid": 133229,
+   "age": 32.0,
+   "sex": "F",
+   "weight": 48.7,
+   "height": 161.4
+  },
+  {
+   "caseid": 133261,
+   "age": 79.0,
+   "sex": "F",
+   "weight": 72.0,
+   "height": 161.2
+  },
+  {
+   "caseid": 133262,
+   "age": 21.0,
+   "sex": "F",
+   "weight": 63.0,
+   "height": 167.1
+  },
+  {
+   "caseid": 133291,
+   "age": 68.0,
+   "sex": "M",
+   "weight": 103.0,
+   "height": 184.0
+  },
+  {
+   "caseid": 133305,
+   "age": 39.0,
+   "sex": "F",
+   "weight": 71.0,
+   "height": 166.0
+  },
+  {
+   "caseid": 133326,
+   "age": 78.0,
+   "sex": "F",
+   "weight": 65.5,
+   "height": 152.4
+  },
+  {
+   "caseid": 133337,
+   "age": 49.0,
+   "sex": "F",
+   "weight": 65.8,
+   "height": 151.3
+  },
+  {
+   "caseid": 133389,
+   "age": 70.0,
+   "sex": "M",
+   "weight": 73.8,
+   "height": 174.4
+  },
+  {
+   "caseid": 133406,
+   "age": 39.0,
+   "sex": "F",
+   "weight": 71.8,
+   "height": 164.9
+  },
+  {
+   "caseid": 133418,
+   "age": 36.0,
+   "sex": "F",
+   "weight": 82.3,
+   "height": 155.1
+  },
+  {
+   "caseid": 133426,
+   "age": 43.0,
+   "sex": "F",
+   "weight": 67.2,
+   "height": 163.4
+  },
+  {
+   "caseid": 133480,
+   "age": 50.0,
+   "sex": "M",
+   "weight": 124.0,
+   "height": 194.5
+  },
+  {
+   "caseid": 133545,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 83.9,
+   "height": 154.9
+  },
+  {
+   "caseid": 133566,
+   "age": 67.0,
+   "sex": "F",
+   "weight": 75.5,
+   "height": 161.2
+  },
+  {
+   "caseid": 133593,
+   "age": 30.0,
+   "sex": "M",
+   "weight": 84.5,
+   "height": 177.1
+  },
+  {
+   "caseid": 133613,
+   "age": 39.0,
+   "sex": "F",
+   "weight": 98.7,
+   "height": 171.4
+  },
+  {
+   "caseid": 133627,
+   "age": 57.0,
+   "sex": "M",
+   "weight": 73.2,
+   "height": 180.6
+  },
+  {
+   "caseid": 133641,
+   "age": 45.0,
+   "sex": "F",
+   "weight": 70.3,
+   "height": 162.8
+  },
+  {
+   "caseid": 133670,
+   "age": 21.0,
+   "sex": "M",
+   "weight": 75.2,
+   "height": 187.4
+  },
+  {
+   "caseid": 133678,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 57.3,
+   "height": 154.1
+  },
+  {
+   "caseid": 133680,
+   "age": 28.0,
+   "sex": "F",
+   "weight": 56.5,
+   "height": 159.7
+  },
+  {
+   "caseid": 133681,
+   "age": 35.0,
+   "sex": "M",
+   "weight": 85.0,
+   "height": 175.0
+  },
+  {
+   "caseid": 133686,
+   "age": 63.0,
+   "sex": "M",
+   "weight": 95.8,
+   "height": 184.0
+  },
+  {
+   "caseid": 133689,
+   "age": 55.0,
+   "sex": "M",
+   "weight": 86.2,
+   "height": 182.0
+  },
+  {
+   "caseid": 133706,
+   "age": 39.0,
+   "sex": "F",
+   "weight": 67.7,
+   "height": 158.7
+  },
+  {
+   "caseid": 133727,
+   "age": 19.0,
+   "sex": "M",
+   "weight": 77.2,
+   "height": 177.2
+  },
+  {
+   "caseid": 133753,
+   "age": 73.0,
+   "sex": "M",
+   "weight": 69.2,
+   "height": 172.3
+  },
+  {
+   "caseid": 133773,
+   "age": 44.0,
+   "sex": "F",
+   "weight": 50.8,
+   "height": 163.5
+  },
+  {
+   "caseid": 133779,
+   "age": 69.0,
+   "sex": "F",
+   "weight": 58.4,
+   "height": 155.9
+  },
+  {
+   "caseid": 133782,
+   "age": 39.0,
+   "sex": "M",
+   "weight": 70.0,
+   "height": 169.5
+  },
+  {
+   "caseid": 133787,
+   "age": 25.0,
+   "sex": "M",
+   "weight": 59.5,
+   "height": 168.8
+  },
+  {
+   "caseid": 133836,
+   "age": 74.0,
+   "sex": "M",
+   "weight": 81.6,
+   "height": 171.8
+  },
+  {
+   "caseid": 133839,
+   "age": 29.0,
+   "sex": "M",
+   "weight": 97.3,
+   "height": 176.8
+  },
+  {
+   "caseid": 133843,
+   "age": 74.0,
+   "sex": "F",
+   "weight": 64.5,
+   "height": 154.5
+  },
+  {
+   "caseid": 133934,
+   "age": 65.0,
+   "sex": "F",
+   "weight": 75.0,
+   "height": 157.0
+  },
+  {
+   "caseid": 133945,
+   "age": 70.0,
+   "sex": "M",
+   "weight": 92.5,
+   "height": 169.7
+  },
+  {
+   "caseid": 133959,
+   "age": 63.0,
+   "sex": "M",
+   "weight": 92.7,
+   "height": 169.7
+  },
+  {
+   "caseid": 133971,
+   "age": 22.0,
+   "sex": "M",
+   "weight": 94.4,
+   "height": 176.9
+  },
+  {
+   "caseid": 134012,
+   "age": 51.0,
+   "sex": "F",
+   "weight": 57.3,
+   "height": 173.6
+  },
+  {
+   "caseid": 134037,
+   "age": 55.0,
+   "sex": "M",
+   "weight": 85.9,
+   "height": 177.1
+  },
+  {
+   "caseid": 134045,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 64.5,
+   "height": 162.8
+  },
+  {
+   "caseid": 134054,
+   "age": 60.0,
+   "sex": "F",
+   "weight": 59.4,
+   "height": 155.6
+  },
+  {
+   "caseid": 134092,
+   "age": 78.0,
+   "sex": "F",
+   "weight": 65.8,
+   "height": 161.1
+  },
+  {
+   "caseid": 134093,
+   "age": 57.0,
+   "sex": "F",
+   "weight": 61.4,
+   "height": 155.3
+  },
+  {
+   "caseid": 134164,
+   "age": 33.0,
+   "sex": "M",
+   "weight": 85.4,
+   "height": 189.0
+  },
+  {
+   "caseid": 134173,
+   "age": 36.0,
+   "sex": "M",
+   "weight": 78.1,
+   "height": 178.5
+  },
+  {
+   "caseid": 134183,
+   "age": 52.0,
+   "sex": "M",
+   "weight": 86.0,
+   "height": 167.8
+  },
+  {
+   "caseid": 134201,
+   "age": 32.0,
+   "sex": "F",
+   "weight": 66.1,
+   "height": 153.7
+  },
+  {
+   "caseid": 134234,
+   "age": 20.0,
+   "sex": "F",
+   "weight": 83.6,
+   "height": 168.2
+  },
+  {
+   "caseid": 134255,
+   "age": 64.0,
+   "sex": "M",
+   "weight": 85.9,
+   "height": 185.3
+  },
+  {
+   "caseid": 134273,
+   "age": 72.0,
+   "sex": "F",
+   "weight": 76.9,
+   "height": 164.6
+  },
+  {
+   "caseid": 134297,
+   "age": 31.0,
+   "sex": "F",
+   "weight": 68.3,
+   "height": 160.3
+  },
+  {
+   "caseid": 134331,
+   "age": 55.0,
+   "sex": "M",
+   "weight": 96.6,
+   "height": 180.5
+  },
+  {
+   "caseid": 134343,
+   "age": 67.0,
+   "sex": "M",
+   "weight": 63.8,
+   "height": 183.4
+  },
+  {
+   "caseid": 134373,
+   "age": 29.0,
+   "sex": "F",
+   "weight": 80.4,
+   "height": 161.7
+  },
+  {
+   "caseid": 134392,
+   "age": 41.0,
+   "sex": "F",
+   "weight": 59.7,
+   "height": 157.1
+  },
+  {
+   "caseid": 134468,
+   "age": 32.0,
+   "sex": "M",
+   "weight": 90.7,
+   "height": 185.1
+  },
+  {
+   "caseid": 134482,
+   "age": 37.0,
+   "sex": "M",
+   "weight": 58.3,
+   "height": 166.8
+  },
+  {
+   "caseid": 134493,
+   "age": 21.0,
+   "sex": "M",
+   "weight": 94.6,
+   "height": 177.5
+  },
+  {
+   "caseid": 134506,
+   "age": 21.0,
+   "sex": "F",
+   "weight": 63.3,
+   "height": 149.7
+  },
+  {
+   "caseid": 134536,
+   "age": 43.0,
+   "sex": "F",
+   "weight": 57.8,
+   "height": 158.3
+  },
+  {
+   "caseid": 134537,
+   "age": 36.0,
+   "sex": "M",
+   "weight": 91.6,
+   "height": 170.0
+  },
+  {
+   "caseid": 134538,
+   "age": 61.0,
+   "sex": "F",
+   "weight": 85.4,
+   "height": 157.5
+  },
+  {
+   "caseid": 134551,
+   "age": 37.0,
+   "sex": "F",
+   "weight": 57.4,
+   "height": 156.7
+  },
+  {
+   "caseid": 134555,
+   "age": 18.0,
+   "sex": "M",
+   "weight": 57.7,
+   "height": 159.5
+  },
+  {
+   "caseid": 134559,
+   "age": 71.0,
+   "sex": "M",
+   "weight": 83.9,
+   "height": 164.7
+  },
+  {
+   "caseid": 134564,
+   "age": 24.0,
+   "sex": "F",
+   "weight": 63.3,
+   "height": 164.8
+  },
+  {
+   "caseid": 134570,
+   "age": 36.0,
+   "sex": "M",
+   "weight": 84.8,
+   "height": 178.0
+  },
+  {
+   "caseid": 134571,
+   "age": 29.0,
+   "sex": "F",
+   "weight": 84.8,
+   "height": 162.6
+  },
+  {
+   "caseid": 134596,
+   "age": 28.0,
+   "sex": "M",
+   "weight": 68.2,
+   "height": 178.5
+  },
+  {
+   "caseid": 134613,
+   "age": 53.0,
+   "sex": "F",
+   "weight": 79.5,
+   "height": 173.6
+  },
+  {
+   "caseid": 134637,
+   "age": 55.0,
+   "sex": "M",
+   "weight": 94.9,
+   "height": 172.6
+  },
+  {
+   "caseid": 134683,
+   "age": 45.0,
+   "sex": "F",
+   "weight": 83.1,
+   "height": 163.4
+  },
+  {
+   "caseid": 134696,
+   "age": 29.0,
+   "sex": "M",
+   "weight": 80.2,
+   "height": 171.5
+  },
+  {
+   "caseid": 134704,
+   "age": 51.0,
+   "sex": "F",
+   "weight": 67.7,
+   "height": 156.4
+  },
+  {
+   "caseid": 134723,
+   "age": 70.0,
+   "sex": "F",
+   "weight": 81.6,
+   "height": 159.3
+  },
+  {
+   "caseid": 134731,
+   "age": 27.0,
+   "sex": "M",
+   "weight": 78.8,
+   "height": 166.8
+  },
+  {
+   "caseid": 134737,
+   "age": 23.0,
+   "sex": "M",
+   "weight": 85.4,
+   "height": 175.1
+  },
+  {
+   "caseid": 134740,
+   "age": 73.0,
+   "sex": "M",
+   "weight": 78.3,
+   "height": 176.8
+  },
+  {
+   "caseid": 134812,
+   "age": 74.0,
+   "sex": "F",
+   "weight": 62.6,
+   "height": 156.9
+  },
+  {
+   "caseid": 134817,
+   "age": 80.0,
+   "sex": "M",
+   "weight": 89.2,
+   "height": 166.6
+  },
+  {
+   "caseid": 134822,
+   "age": 71.0,
+   "sex": "M",
+   "weight": 78.0,
+   "height": 173.3
+  },
+  {
+   "caseid": 134839,
+   "age": 27.0,
+   "sex": "M",
+   "weight": 75.5,
+   "height": 178.9
+  },
+  {
+   "caseid": 134856,
+   "age": 32.0,
+   "sex": "F",
+   "weight": 84.6,
+   "height": 163.4
+  },
+  {
+   "caseid": 134894,
+   "age": 39.0,
+   "sex": "M",
+   "weight": 92.2,
+   "height": 178.8
+  },
+  {
+   "caseid": 134896,
+   "age": 34.0,
+   "sex": "F",
+   "weight": 84.3,
+   "height": 166.0
+  },
+  {
+   "caseid": 134902,
+   "age": 41.0,
+   "sex": "F",
+   "weight": 58.1,
+   "height": 166.3
+  },
+  {
+   "caseid": 134908,
+   "age": 72.0,
+   "sex": "M",
+   "weight": 71.6,
+   "height": 167.7
+  },
+  {
+   "caseid": 134917,
+   "age": 22.0,
+   "sex": "F",
+   "weight": 69.7,
+   "height": 165.5
+  },
+  {
+   "caseid": 134918,
+   "age": 72.0,
+   "sex": "M",
+   "weight": 72.2,
+   "height": 156.7
+  },
+  {
+   "caseid": 134944,
+   "age": 80.0,
+   "sex": "M",
+   "weight": 76.3,
+   "height": 163.9
+  },
+  {
+   "caseid": 134965,
+   "age": 66.0,
+   "sex": "F",
+   "weight": 65.1,
+   "height": 153.1
+  },
+  {
+   "caseid": 134979,
+   "age": 46.0,
+   "sex": "M",
+   "weight": 79.7,
+   "height": 172.9
+  },
+  {
+   "caseid": 135013,
+   "age": 26.0,
+   "sex": "M",
+   "weight": 85.5,
+   "height": 175.0
+  },
+  {
+   "caseid": 135060,
+   "age": 80.0,
+   "sex": "M",
+   "weight": 69.9,
+   "height": 169.5
+  },
+  {
+   "caseid": 135067,
+   "age": 70.0,
+   "sex": "F",
+   "weight": 66.2,
+   "height": 154.1
+  },
+  {
+   "caseid": 135137,
+   "age": 32.0,
+   "sex": "M",
+   "weight": 88.6,
+   "height": 181.0
+  },
+  {
+   "caseid": 135192,
+   "age": 52.0,
+   "sex": "M",
+   "weight": 92.7,
+   "height": 173.3
+  },
+  {
+   "caseid": 135222,
+   "age": 25.0,
+   "sex": "M",
+   "weight": 71.3,
+   "height": 172.2
+  },
+  {
+   "caseid": 135310,
+   "age": 35.0,
+   "sex": "F",
+   "weight": 62.0,
+   "height": 144.8
+  },
+  {
+   "caseid": 135339,
+   "age": 59.0,
+   "sex": "F",
+   "weight": 87.5,
+   "height": 160.9
+  },
+  {
+   "caseid": 135384,
+   "age": 60.0,
+   "sex": "F",
+   "weight": 54.4,
+   "height": 161.2
+  },
+  {
+   "caseid": 135389,
+   "age": 27.0,
+   "sex": "F",
+   "weight": 50.8,
+   "height": 153.4
+  },
+  {
+   "caseid": 135416,
+   "age": 50.0,
+   "sex": "F",
+   "weight": 66.7,
+   "height": 162.8
+  },
+  {
+   "caseid": 135446,
+   "age": 55.0,
+   "sex": "M",
+   "weight": 92.0,
+   "height": 185.9
+  },
+  {
+   "caseid": 135467,
+   "age": 62.0,
+   "sex": "M",
+   "weight": 72.9,
+   "height": 166.0
+  },
+  {
+   "caseid": 135469,
+   "age": 42.0,
+   "sex": "M",
+   "weight": 60.0,
+   "height": 165.8
+  },
+  {
+   "caseid": 135485,
+   "age": 21.0,
+   "sex": "F",
+   "weight": 78.6,
+   "height": 175.8
+  },
+  {
+   "caseid": 135539,
+   "age": 73.0,
+   "sex": "F",
+   "weight": 69.7,
+   "height": 154.9
+  },
+  {
+   "caseid": 135540,
+   "age": 29.0,
+   "sex": "M",
+   "weight": 85.4,
+   "height": 193.3
+  },
+  {
+   "caseid": 135541,
+   "age": 68.0,
+   "sex": "M",
+   "weight": 87.9,
+   "height": 173.8
+  },
+  {
+   "caseid": 135556,
+   "age": 18.0,
+   "sex": "F",
+   "weight": 60.8,
+   "height": 156.2
+  },
+  {
+   "caseid": 135599,
+   "age": 26.0,
+   "sex": "F",
+   "weight": 62.4,
+   "height": 167.8
+  },
+  {
+   "caseid": 135615,
+   "age": 78.0,
+   "sex": "F",
+   "weight": 67.9,
+   "height": 157.2
+  },
+  {
+   "caseid": 135638,
+   "age": 30.0,
+   "sex": "F",
+   "weight": 81.4,
+   "height": 173.7
+  },
+  {
+   "caseid": 135643,
+   "age": 56.0,
+   "sex": "F",
+   "weight": 58.2,
+   "height": 146.1
+  },
+  {
+   "caseid": 135653,
+   "age": 27.0,
+   "sex": "F",
+   "weight": 79.4,
+   "height": 164.9
+  },
+  {
+   "caseid": 135661,
+   "age": 59.0,
+   "sex": "M",
+   "weight": 85.1,
+   "height": 175.9
+  },
+  {
+   "caseid": 135665,
+   "age": 65.0,
+   "sex": "F",
+   "weight": 78.7,
+   "height": 151.7
+  },
+  {
+   "caseid": 135674,
+   "age": 25.0,
+   "sex": "F",
+   "weight": 70.1,
+   "height": 163.6
+  },
+  {
+   "caseid": 135701,
+   "age": 51.0,
+   "sex": "M",
+   "weight": 85.3,
+   "height": 172.2
+  },
+  {
+   "caseid": 135747,
+   "age": 40.0,
+   "sex": "F",
+   "weight": 68.7,
+   "height": 163.2
+  },
+  {
+   "caseid": 135827,
+   "age": 63.0,
+   "sex": "M",
+   "weight": 99.6,
+   "height": 183.6
+  },
+  {
+   "caseid": 135842,
+   "age": 58.0,
+   "sex": "F",
+   "weight": 79.9,
+   "height": 151.4
+  },
+  {
+   "caseid": 135848,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 65.0,
+   "height": 162.0
+  },
+  {
+   "caseid": 135877,
+   "age": 77.0,
+   "sex": "M",
+   "weight": 95.6,
+   "height": 167.5
+  },
+  {
+   "caseid": 135885,
+   "age": 20.0,
+   "sex": "M",
+   "weight": 72.2,
+   "height": 167.8
+  },
+  {
+   "caseid": 135892,
+   "age": 20.0,
+   "sex": "M",
+   "weight": 63.7,
+   "height": 174.2
+  },
+  {
+   "caseid": 135895,
+   "age": 20.0,
+   "sex": "M",
+   "weight": 60.5,
+   "height": 184.9
+  },
+  {
+   "caseid": 135941,
+   "age": 21.0,
+   "sex": "F",
+   "weight": 63.7,
+   "height": 161.3
+  },
+  {
+   "caseid": 136014,
+   "age": 20.0,
+   "sex": "M",
+   "weight": 89.7,
+   "height": 177.1
+  },
+  {
+   "caseid": 136200,
+   "age": 76.0,
+   "sex": "F",
+   "weight": 65.4,
+   "height": 156.9
+  },
+  {
+   "caseid": 136261,
+   "age": 68.0,
+   "sex": "F",
+   "weight": 60.5,
+   "height": 158.8
+  },
+  {
+   "caseid": 136268,
+   "age": 48.0,
+   "sex": "M",
+   "weight": 81.9,
+   "height": 169.9
+  },
+  {
+   "caseid": 136281,
+   "age": 66.0,
+   "sex": "M",
+   "weight": 70.7,
+   "height": 171.0
+  },
+  {
+   "caseid": 136291,
+   "age": 38.0,
+   "sex": "F",
+   "weight": 66.6,
+   "height": 160.7
+  },
+  {
+   "caseid": 136320,
+   "age": 47.0,
+   "sex": "F",
+   "weight": 61.6,
+   "height": 163.5
+  },
+  {
+   "caseid": 136323,
+   "age": 43.0,
+   "sex": "M",
+   "weight": 63.8,
+   "height": 170.3
+  },
+  {
+   "caseid": 136341,
+   "age": 38.0,
+   "sex": "M",
+   "weight": 85.1,
+   "height": 179.3
+  },
+  {
+   "caseid": 136355,
+   "age": 60.0,
+   "sex": "M",
+   "weight": 106.2,
+   "height": 183.7
+  },
+  {
+   "caseid": 136357,
+   "age": 31.0,
+   "sex": "M",
+   "weight": 62.4,
+   "height": 177.9
+  },
+  {
+   "caseid": 136369,
+   "age": 27.0,
+   "sex": "F",
+   "weight": 77.0,
+   "height": 170.0
+  },
+  {
+   "caseid": 136385,
+   "age": 63.0,
+   "sex": "M",
+   "weight": 92.9,
+   "height": 181.9
+  },
+  {
+   "caseid": 136418,
+   "age": 70.0,
+   "sex": "M",
+   "weight": 75.3,
+   "height": 159.3
+  },
+  {
+   "caseid": 136421,
+   "age": 25.0,
+   "sex": "M",
+   "weight": 94.8,
+   "height": 169.3
+  },
+  {
+   "caseid": 136440,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 56.5,
+   "height": 160.2
+  },
+  {
+   "caseid": 136442,
+   "age": 37.0,
+   "sex": "M",
+   "weight": 95.9,
+   "height": 194.6
+  },
+  {
+   "caseid": 136453,
+   "age": 32.0,
+   "sex": "F",
+   "weight": 60.2,
+   "height": 162.5
+  },
+  {
+   "caseid": 136477,
+   "age": 52.0,
+   "sex": "M",
+   "weight": 84.4,
+   "height": 174.9
+  },
+  {
+   "caseid": 136494,
+   "age": 20.0,
+   "sex": "M",
+   "weight": 81.5,
+   "height": 170.2
+  },
+  {
+   "caseid": 136512,
+   "age": 71.0,
+   "sex": "F",
+   "weight": 59.0,
+   "height": 155.2
+  },
+  {
+   "caseid": 136571,
+   "age": 63.0,
+   "sex": "M",
+   "weight": 88.0,
+   "height": 185.1
+  },
+  {
+   "caseid": 136591,
+   "age": 57.0,
+   "sex": "M",
+   "weight": 61.0,
+   "height": 158.9
+  },
+  {
+   "caseid": 136593,
+   "age": 29.0,
+   "sex": "F",
+   "weight": 64.2,
+   "height": 155.8
+  },
+  {
+   "caseid": 136644,
+   "age": 51.0,
+   "sex": "F",
+   "weight": 70.1,
+   "height": 148.9
+  },
+  {
+   "caseid": 136655,
+   "age": 72.0,
+   "sex": "M",
+   "weight": 68.5,
+   "height": 167.2
+  },
+  {
+   "caseid": 136730,
+   "age": 62.0,
+   "sex": "M",
+   "weight": 83.5,
+   "height": 174.3
+  },
+  {
+   "caseid": 136731,
+   "age": 31.0,
+   "sex": "F",
+   "weight": 55.5,
+   "height": 151.1
+  },
+  {
+   "caseid": 136745,
+   "age": 38.0,
+   "sex": "M",
+   "weight": 77.5,
+   "height": 174.8
+  },
+  {
+   "caseid": 136750,
+   "age": 62.0,
+   "sex": "M",
+   "weight": 112.6,
+   "height": 183.7
+  },
+  {
+   "caseid": 136754,
+   "age": 80.0,
+   "sex": "M",
+   "weight": 62.8,
+   "height": 169.0
+  },
+  {
+   "caseid": 136803,
+   "age": 62.0,
+   "sex": "M",
+   "weight": 99.1,
+   "height": 173.2
+  },
+  {
+   "caseid": 136831,
+   "age": 43.0,
+   "sex": "F",
+   "weight": 73.2,
+   "height": 158.9
+  },
+  {
+   "caseid": 136850,
+   "age": 18.0,
+   "sex": "M",
+   "weight": 61.3,
+   "height": 161.6
+  },
+  {
+   "caseid": 136855,
+   "age": 20.0,
+   "sex": "F",
+   "weight": 47.0,
+   "height": 162.8
+  },
+  {
+   "caseid": 136866,
+   "age": 25.0,
+   "sex": "M",
+   "weight": 92.2,
+   "height": 182.8
+  },
+  {
+   "caseid": 136872,
+   "age": 26.0,
+   "sex": "M",
+   "weight": 89.0,
+   "height": 159.8
+  },
+  {
+   "caseid": 136914,
+   "age": 56.0,
+   "sex": "M",
+   "weight": 104.7,
+   "height": 178.2
+  },
+  {
+   "caseid": 136951,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 46.7,
+   "height": 159.4
+  },
+  {
+   "caseid": 136954,
+   "age": 35.0,
+   "sex": "M",
+   "weight": 98.0,
+   "height": 176.7
+  },
+  {
+   "caseid": 136966,
+   "age": 80.0,
+   "sex": "M",
+   "weight": 77.4,
+   "height": 170.0
+  },
+  {
+   "caseid": 136997,
+   "age": 77.0,
+   "sex": "M",
+   "weight": 86.6,
+   "height": 175.1
+  },
+  {
+   "caseid": 137004,
+   "age": 21.0,
+   "sex": "M",
+   "weight": 95.9,
+   "height": 176.2
+  },
+  {
+   "caseid": 137005,
+   "age": 30.0,
+   "sex": "M",
+   "weight": 83.6,
+   "height": 186.7
+  },
+  {
+   "caseid": 137022,
+   "age": 73.0,
+   "sex": "M",
+   "weight": 78.1,
+   "height": 178.0
+  },
+  {
+   "caseid": 137023,
+   "age": 27.0,
+   "sex": "F",
+   "weight": 47.5,
+   "height": 156.4
+  },
+  {
+   "caseid": 137037,
+   "age": 55.0,
+   "sex": "M",
+   "weight": 100.8,
+   "height": 175.2
+  },
+  {
+   "caseid": 137045,
+   "age": 59.0,
+   "sex": "F",
+   "weight": 44.9,
+   "height": 148.7
+  },
+  {
+   "caseid": 137083,
+   "age": 61.0,
+   "sex": "M",
+   "weight": 96.1,
+   "height": 170.8
+  },
+  {
+   "caseid": 137110,
+   "age": 40.0,
+   "sex": "M",
+   "weight": 83.4,
+   "height": 182.7
+  },
+  {
+   "caseid": 137126,
+   "age": 68.0,
+   "sex": "M",
+   "weight": 100.9,
+   "height": 174.6
+  },
+  {
+   "caseid": 137132,
+   "age": 51.0,
+   "sex": "F",
+   "weight": 76.0,
+   "height": 174.3
+  },
+  {
+   "caseid": 137164,
+   "age": 59.0,
+   "sex": "M",
+   "weight": 94.9,
+   "height": 176.3
+  },
+  {
+   "caseid": 137193,
+   "age": 32.0,
+   "sex": "F",
+   "weight": 59.7,
+   "height": 158.3
+  },
+  {
+   "caseid": 137234,
+   "age": 63.0,
+   "sex": "M",
+   "weight": 78.6,
+   "height": 178.1
+  },
+  {
+   "caseid": 137240,
+   "age": 23.0,
+   "sex": "M",
+   "weight": 73.8,
+   "height": 174.1
+  },
+  {
+   "caseid": 137255,
+   "age": 54.0,
+   "sex": "F",
+   "weight": 79.7,
+   "height": 157.0
+  },
+  {
+   "caseid": 137286,
+   "age": 65.0,
+   "sex": "F",
+   "weight": 42.8,
+   "height": 147.0
+  },
+  {
+   "caseid": 137345,
+   "age": 26.0,
+   "sex": "M",
+   "weight": 82.0,
+   "height": 170.0
+  },
+  {
+   "caseid": 137396,
+   "age": 43.0,
+   "sex": "M",
+   "weight": 88.4,
+   "height": 169.8
+  },
+  {
+   "caseid": 137403,
+   "age": 80.0,
+   "sex": "M",
+   "weight": 75.1,
+   "height": 162.0
+  },
+  {
+   "caseid": 137421,
+   "age": 61.0,
+   "sex": "M",
+   "weight": 90.3,
+   "height": 180.2
+  },
+  {
+   "caseid": 137423,
+   "age": 44.0,
+   "sex": "M",
+   "weight": 84.1,
+   "height": 166.8
+  },
+  {
+   "caseid": 137428,
+   "age": 19.0,
+   "sex": "F",
+   "weight": 45.8,
+   "height": 160.7
+  },
+  {
+   "caseid": 137429,
+   "age": 72.0,
+   "sex": "F",
+   "weight": 65.6,
+   "height": 155.9
+  },
+  {
+   "caseid": 137436,
+   "age": 80.0,
+   "sex": "M",
+   "weight": 88.3,
+   "height": 184.2
+  },
+  {
+   "caseid": 137488,
+   "age": 29.0,
+   "sex": "M",
+   "weight": 95.7,
+   "height": 182.2
+  },
+  {
+   "caseid": 137490,
+   "age": 44.0,
+   "sex": "M",
+   "weight": 91.4,
+   "height": 170.3
+  },
+  {
+   "caseid": 137508,
+   "age": 79.0,
+   "sex": "M",
+   "weight": 81.0,
+   "height": 169.9
+  },
+  {
+   "caseid": 137530,
+   "age": 53.0,
+   "sex": "F",
+   "weight": 63.2,
+   "height": 161.4
+  },
+  {
+   "caseid": 137564,
+   "age": 51.0,
+   "sex": "M",
+   "weight": 111.0,
+   "height": 181.2
+  },
+  {
+   "caseid": 137569,
+   "age": 20.0,
+   "sex": "M",
+   "weight": 85.3,
+   "height": 170.2
+  },
+  {
+   "caseid": 137573,
+   "age": 44.0,
+   "sex": "F",
+   "weight": 71.1,
+   "height": 160.1
+  },
+  {
+   "caseid": 137582,
+   "age": 18.0,
+   "sex": "F",
+   "weight": 83.4,
+   "height": 168.3
+  },
+  {
+   "caseid": 137593,
+   "age": 42.0,
+   "sex": "F",
+   "weight": 86.2,
+   "height": 174.1
+  },
+  {
+   "caseid": 137612,
+   "age": 46.0,
+   "sex": "M",
+   "weight": 48.9,
+   "height": 156.0
+  },
+  {
+   "caseid": 137617,
+   "age": 33.0,
+   "sex": "F",
+   "weight": 75.3,
+   "height": 165.3
+  },
+  {
+   "caseid": 137651,
+   "age": 51.0,
+   "sex": "M",
+   "weight": 78.5,
+   "height": 176.1
+  },
+  {
+   "caseid": 137657,
+   "age": 67.0,
+   "sex": "F",
+   "weight": 66.2,
+   "height": 154.6
+  },
+  {
+   "caseid": 137756,
+   "age": 51.0,
+   "sex": "M",
+   "weight": 73.4,
+   "height": 163.4
+  },
+  {
+   "caseid": 137757,
+   "age": 23.0,
+   "sex": "F",
+   "weight": 51.7,
+   "height": 160.5
+  },
+  {
+   "caseid": 137774,
+   "age": 48.0,
+   "sex": "M",
+   "weight": 94.8,
+   "height": 176.7
+  },
+  {
+   "caseid": 137817,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 83.2,
+   "height": 159.3
+  },
+  {
+   "caseid": 137826,
+   "age": 39.0,
+   "sex": "F",
+   "weight": 48.5,
+   "height": 161.6
+  },
+  {
+   "caseid": 137878,
+   "age": 69.0,
+   "sex": "M",
+   "weight": 90.2,
+   "height": 171.2
+  },
+  {
+   "caseid": 137890,
+   "age": 44.0,
+   "sex": "F",
+   "weight": 57.6,
+   "height": 160.9
+  },
+  {
+   "caseid": 137892,
+   "age": 51.0,
+   "sex": "F",
+   "weight": 69.5,
+   "height": 165.1
+  },
+  {
+   "caseid": 137934,
+   "age": 67.0,
+   "sex": "M",
+   "weight": 91.3,
+   "height": 180.7
+  },
+  {
+   "caseid": 137949,
+   "age": 63.0,
+   "sex": "M",
+   "weight": 86.4,
+   "height": 185.3
+  },
+  {
+   "caseid": 137953,
+   "age": 65.0,
+   "sex": "F",
+   "weight": 72.2,
+   "height": 159.1
+  },
+  {
+   "caseid": 137967,
+   "age": 71.0,
+   "sex": "M",
+   "weight": 73.9,
+   "height": 183.7
+  },
+  {
+   "caseid": 137974,
+   "age": 37.0,
+   "sex": "F",
+   "weight": 59.0,
+   "height": 160.7
+  },
+  {
+   "caseid": 137996,
+   "age": 40.0,
+   "sex": "F",
+   "weight": 75.0,
+   "height": 167.1
+  },
+  {
+   "caseid": 138037,
+   "age": 39.0,
+   "sex": "F",
+   "weight": 72.3,
+   "height": 152.4
+  },
+  {
+   "caseid": 138124,
+   "age": 41.0,
+   "sex": "F",
+   "weight": 73.7,
+   "height": 170.3
+  },
+  {
+   "caseid": 138136,
+   "age": 56.0,
+   "sex": "M",
+   "weight": 70.7,
+   "height": 177.5
+  },
+  {
+   "caseid": 138138,
+   "age": 37.0,
+   "sex": "F",
+   "weight": 68.0,
+   "height": 157.4
+  },
+  {
+   "caseid": 138147,
+   "age": 30.0,
+   "sex": "F",
+   "weight": 64.5,
+   "height": 161.9
+  },
+  {
+   "caseid": 138152,
+   "age": 34.0,
+   "sex": "M",
+   "weight": 96.5,
+   "height": 171.6
+  },
+  {
+   "caseid": 138153,
+   "age": 66.0,
+   "sex": "F",
+   "weight": 50.8,
+   "height": 163.6
+  },
+  {
+   "caseid": 138159,
+   "age": 43.0,
+   "sex": "F",
+   "weight": 89.1,
+   "height": 170.2
+  },
+  {
+   "caseid": 138167,
+   "age": 57.0,
+   "sex": "F",
+   "weight": 77.5,
+   "height": 155.2
+  },
+  {
+   "caseid": 138211,
+   "age": 37.0,
+   "sex": "M",
+   "weight": 99.4,
+   "height": 189.1
+  },
+  {
+   "caseid": 138234,
+   "age": 30.0,
+   "sex": "M",
+   "weight": 71.7,
+   "height": 158.2
+  },
+  {
+   "caseid": 138263,
+   "age": 31.0,
+   "sex": "F",
+   "weight": 59.0,
+   "height": 151.5
+  },
+  {
+   "caseid": 138297,
+   "age": 40.0,
+   "sex": "M",
+   "weight": 74.3,
+   "height": 176.4
+  },
+  {
+   "caseid": 138301,
+   "age": 21.0,
+   "sex": "F",
+   "weight": 81.9,
+   "height": 172.8
+  },
+  {
+   "caseid": 138305,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 75.1,
+   "height": 162.0
+  },
+  {
+   "caseid": 138316,
+   "age": 59.0,
+   "sex": "M",
+   "weight": 96.9,
+   "height": 168.7
+  },
+  {
+   "caseid": 138317,
+   "age": 57.0,
+   "sex": "M",
+   "weight": 108.9,
+   "height": 182.9
+  },
+  {
+   "caseid": 138350,
+   "age": 27.0,
+   "sex": "F",
+   "weight": 51.3,
+   "height": 166.7
+  },
+  {
+   "caseid": 138377,
+   "age": 33.0,
+   "sex": "M",
+   "weight": 59.2,
+   "height": 158.7
+  },
+  {
+   "caseid": 138379,
+   "age": 27.0,
+   "sex": "M",
+   "weight": 54.5,
+   "height": 159.9
+  },
+  {
+   "caseid": 138387,
+   "age": 51.0,
+   "sex": "M",
+   "weight": 81.9,
+   "height": 166.1
+  },
+  {
+   "caseid": 138409,
+   "age": 37.0,
+   "sex": "F",
+   "weight": 75.0,
+   "height": 163.9
+  },
+  {
+   "caseid": 138421,
+   "age": 44.0,
+   "sex": "M",
+   "weight": 108.9,
+   "height": 181.5
+  },
+  {
+   "caseid": 138440,
+   "age": 18.0,
+   "sex": "M",
+   "weight": 60.0,
+   "height": 180.3
+  },
+  {
+   "caseid": 138467,
+   "age": 59.0,
+   "sex": "M",
+   "weight": 80.5,
+   "height": 163.3
+  },
+  {
+   "caseid": 138469,
+   "age": 65.0,
+   "sex": "F",
+   "weight": 75.4,
+   "height": 162.6
+  },
+  {
+   "caseid": 138474,
+   "age": 62.0,
+   "sex": "M",
+   "weight": 79.3,
+   "height": 181.4
+  },
+  {
+   "caseid": 138548,
+   "age": 40.0,
+   "sex": "M",
+   "weight": 76.1,
+   "height": 190.5
+  },
+  {
+   "caseid": 138555,
+   "age": 33.0,
+   "sex": "F",
+   "weight": 71.5,
+   "height": 178.2
+  },
+  {
+   "caseid": 138613,
+   "age": 58.0,
+   "sex": "F",
+   "weight": 91.7,
+   "height": 164.4
+  },
+  {
+   "caseid": 138660,
+   "age": 44.0,
+   "sex": "F",
+   "weight": 104.3,
+   "height": 173.9
+  },
+  {
+   "caseid": 138679,
+   "age": 26.0,
+   "sex": "M",
+   "weight": 49.6,
+   "height": 168.4
+  },
+  {
+   "caseid": 138743,
+   "age": 43.0,
+   "sex": "M",
+   "weight": 99.0,
+   "height": 173.4
+  },
+  {
+   "caseid": 138744,
+   "age": 27.0,
+   "sex": "F",
+   "weight": 49.7,
+   "height": 158.8
+  },
+  {
+   "caseid": 138745,
+   "age": 35.0,
+   "sex": "F",
+   "weight": 70.8,
+   "height": 168.0
+  },
+  {
+   "caseid": 138752,
+   "age": 40.0,
+   "sex": "M",
+   "weight": 74.1,
+   "height": 176.5
+  },
+  {
+   "caseid": 138756,
+   "age": 79.0,
+   "sex": "F",
+   "weight": 62.4,
+   "height": 149.0
+  },
+  {
+   "caseid": 138763,
+   "age": 21.0,
+   "sex": "M",
+   "weight": 85.5,
+   "height": 177.5
+  },
+  {
+   "caseid": 138805,
+   "age": 77.0,
+   "sex": "M",
+   "weight": 58.9,
+   "height": 153.3
+  },
+  {
+   "caseid": 138806,
+   "age": 47.0,
+   "sex": "F",
+   "weight": 54.8,
+   "height": 148.1
+  },
+  {
+   "caseid": 138815,
+   "age": 76.0,
+   "sex": "F",
+   "weight": 76.6,
+   "height": 166.7
+  },
+  {
+   "caseid": 138839,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 41.5,
+   "height": 145.9
+  },
+  {
+   "caseid": 138840,
+   "age": 32.0,
+   "sex": "M",
+   "weight": 76.1,
+   "height": 174.8
+  },
+  {
+   "caseid": 138845,
+   "age": 34.0,
+   "sex": "M",
+   "weight": 103.1,
+   "height": 179.9
+  },
+  {
+   "caseid": 138855,
+   "age": 52.0,
+   "sex": "F",
+   "weight": 67.6,
+   "height": 160.5
+  },
+  {
+   "caseid": 138872,
+   "age": 60.0,
+   "sex": "M",
+   "weight": 92.8,
+   "height": 183.1
+  },
+  {
+   "caseid": 138902,
+   "age": 67.0,
+   "sex": "M",
+   "weight": 87.9,
+   "height": 179.3
+  },
+  {
+   "caseid": 138915,
+   "age": 45.0,
+   "sex": "M",
+   "weight": 63.3,
+   "height": 153.1
+  },
+  {
+   "caseid": 138942,
+   "age": 38.0,
+   "sex": "F",
+   "weight": 78.1,
+   "height": 163.3
+  },
+  {
+   "caseid": 138953,
+   "age": 67.0,
+   "sex": "F",
+   "weight": 66.0,
+   "height": 162.7
+  },
+  {
+   "caseid": 138959,
+   "age": 37.0,
+   "sex": "F",
+   "weight": 69.2,
+   "height": 170.7
+  },
+  {
+   "caseid": 139013,
+   "age": 22.0,
+   "sex": "F",
+   "weight": 72.5,
+   "height": 150.8
+  },
+  {
+   "caseid": 139024,
+   "age": 40.0,
+   "sex": "F",
+   "weight": 54.4,
+   "height": 168.1
+  },
+  {
+   "caseid": 139038,
+   "age": 37.0,
+   "sex": "M",
+   "weight": 94.6,
+   "height": 166.8
+  },
+  {
+   "caseid": 139044,
+   "age": 66.0,
+   "sex": "F",
+   "weight": 74.5,
+   "height": 157.6
+  },
+  {
+   "caseid": 139048,
+   "age": 65.0,
+   "sex": "M",
+   "weight": 86.2,
+   "height": 176.7
+  },
+  {
+   "caseid": 139077,
+   "age": 53.0,
+   "sex": "M",
+   "weight": 70.2,
+   "height": 171.8
+  },
+  {
+   "caseid": 139111,
+   "age": 23.0,
+   "sex": "M",
+   "weight": 61.4,
+   "height": 168.6
+  },
+  {
+   "caseid": 139121,
+   "age": 24.0,
+   "sex": "M",
+   "weight": 80.4,
+   "height": 176.4
+  },
+  {
+   "caseid": 139132,
+   "age": 19.0,
+   "sex": "F",
+   "weight": 59.7,
+   "height": 160.0
+  },
+  {
+   "caseid": 139180,
+   "age": 68.0,
+   "sex": "M",
+   "weight": 58.3,
+   "height": 165.9
+  },
+  {
+   "caseid": 139181,
+   "age": 27.0,
+   "sex": "M",
+   "weight": 73.3,
+   "height": 173.7
+  },
+  {
+   "caseid": 139205,
+   "age": 70.0,
+   "sex": "F",
+   "weight": 55.2,
+   "height": 167.6
+  },
+  {
+   "caseid": 139208,
+   "age": 57.0,
+   "sex": "M",
+   "weight": 74.9,
+   "height": 170.1
+  },
+  {
+   "caseid": 139209,
+   "age": 41.0,
+   "sex": "F",
+   "weight": 82.1,
+   "height": 168.7
+  },
+  {
+   "caseid": 139224,
+   "age": 42.0,
+   "sex": "F",
+   "weight": 71.5,
+   "height": 170.0
+  },
+  {
+   "caseid": 139239,
+   "age": 29.0,
+   "sex": "M",
+   "weight": 89.7,
+   "height": 167.1
+  },
+  {
+   "caseid": 139274,
+   "age": 57.0,
+   "sex": "F",
+   "weight": 53.2,
+   "height": 156.3
+  },
+  {
+   "caseid": 139287,
+   "age": 29.0,
+   "sex": "F",
+   "weight": 59.4,
+   "height": 165.1
+  },
+  {
+   "caseid": 139297,
+   "age": 79.0,
+   "sex": "F",
+   "weight": 54.8,
+   "height": 141.0
+  },
+  {
+   "caseid": 139303,
+   "age": 35.0,
+   "sex": "F",
+   "weight": 70.3,
+   "height": 154.8
+  },
+  {
+   "caseid": 139314,
+   "age": 53.0,
+   "sex": "F",
+   "weight": 64.5,
+   "height": 149.4
+  },
+  {
+   "caseid": 139315,
+   "age": 73.0,
+   "sex": "M",
+   "weight": 77.5,
+   "height": 176.5
+  },
+  {
+   "caseid": 139317,
+   "age": 24.0,
+   "sex": "M",
+   "weight": 70.4,
+   "height": 173.7
+  },
+  {
+   "caseid": 139331,
+   "age": 32.0,
+   "sex": "M",
+   "weight": 78.7,
+   "height": 191.4
+  },
+  {
+   "caseid": 139347,
+   "age": 67.0,
+   "sex": "F",
+   "weight": 67.2,
+   "height": 162.7
+  },
+  {
+   "caseid": 139361,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 82.6,
+   "height": 157.9
+  },
+  {
+   "caseid": 139388,
+   "age": 42.0,
+   "sex": "F",
+   "weight": 65.6,
+   "height": 168.9
+  },
+  {
+   "caseid": 139420,
+   "age": 28.0,
+   "sex": "M",
+   "weight": 75.4,
+   "height": 177.4
+  },
+  {
+   "caseid": 139446,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 55.9,
+   "height": 163.6
+  },
+  {
+   "caseid": 139447,
+   "age": 58.0,
+   "sex": "F",
+   "weight": 69.9,
+   "height": 177.4
+  },
+  {
+   "caseid": 139495,
+   "age": 50.0,
+   "sex": "F",
+   "weight": 50.7,
+   "height": 161.1
+  },
+  {
+   "caseid": 139502,
+   "age": 31.0,
+   "sex": "F",
+   "weight": 77.1,
+   "height": 156.9
+  },
+  {
+   "caseid": 139539,
+   "age": 67.0,
+   "sex": "F",
+   "weight": 62.6,
+   "height": 148.7
+  },
+  {
+   "caseid": 139560,
+   "age": 25.0,
+   "sex": "M",
+   "weight": 64.8,
+   "height": 170.1
+  },
+  {
+   "caseid": 139579,
+   "age": 73.0,
+   "sex": "M",
+   "weight": 63.4,
+   "height": 164.7
+  },
+  {
+   "caseid": 139588,
+   "age": 76.0,
+   "sex": "M",
+   "weight": 87.9,
+   "height": 174.4
+  },
+  {
+   "caseid": 139638,
+   "age": 71.0,
+   "sex": "F",
+   "weight": 55.7,
+   "height": 168.2
+  },
+  {
+   "caseid": 139677,
+   "age": 52.0,
+   "sex": "F",
+   "weight": 53.8,
+   "height": 153.0
+  },
+  {
+   "caseid": 139747,
+   "age": 56.0,
+   "sex": "M",
+   "weight": 88.4,
+   "height": 174.1
+  },
+  {
+   "caseid": 139820,
+   "age": 45.0,
+   "sex": "M",
+   "weight": 96.6,
+   "height": 170.2
+  },
+  {
+   "caseid": 139825,
+   "age": 29.0,
+   "sex": "M",
+   "weight": 89.7,
+   "height": 189.0
+  },
+  {
+   "caseid": 139851,
+   "age": 60.0,
+   "sex": "M",
+   "weight": 72.9,
+   "height": 165.8
+  },
+  {
+   "caseid": 139868,
+   "age": 21.0,
+   "sex": "F",
+   "weight": 57.2,
+   "height": 157.8
+  },
+  {
+   "caseid": 139888,
+   "age": 70.0,
+   "sex": "F",
+   "weight": 64.8,
+   "height": 165.5
+  },
+  {
+   "caseid": 139900,
+   "age": 76.0,
+   "sex": "M",
+   "weight": 67.3,
+   "height": 169.5
+  },
+  {
+   "caseid": 139936,
+   "age": 72.0,
+   "sex": "F",
+   "weight": 58.8,
+   "height": 159.0
+  },
+  {
+   "caseid": 139937,
+   "age": 39.0,
+   "sex": "F",
+   "weight": 81.7,
+   "height": 171.9
+  },
+  {
+   "caseid": 139954,
+   "age": 62.0,
+   "sex": "M",
+   "weight": 78.6,
+   "height": 170.5
+  },
+  {
+   "caseid": 139968,
+   "age": 31.0,
+   "sex": "F",
+   "weight": 55.9,
+   "height": 169.2
+  },
+  {
+   "caseid": 140011,
+   "age": 55.0,
+   "sex": "M",
+   "weight": 99.9,
+   "height": 172.1
+  },
+  {
+   "caseid": 140026,
+   "age": 68.0,
+   "sex": "F",
+   "weight": 68.7,
+   "height": 153.6
+  },
+  {
+   "caseid": 140032,
+   "age": 33.0,
+   "sex": "M",
+   "weight": 81.9,
+   "height": 174.4
+  },
+  {
+   "caseid": 140043,
+   "age": 33.0,
+   "sex": "M",
+   "weight": 92.4,
+   "height": 176.6
+  },
+  {
+   "caseid": 140070,
+   "age": 64.0,
+   "sex": "M",
+   "weight": 73.2,
+   "height": 166.5
+  },
+  {
+   "caseid": 140072,
+   "age": 42.0,
+   "sex": "F",
+   "weight": 55.1,
+   "height": 157.2
+  },
+  {
+   "caseid": 140109,
+   "age": 57.0,
+   "sex": "M",
+   "weight": 78.2,
+   "height": 176.4
+  },
+  {
+   "caseid": 140130,
+   "age": 64.0,
+   "sex": "F",
+   "weight": 65.9,
+   "height": 171.0
+  },
+  {
+   "caseid": 140132,
+   "age": 29.0,
+   "sex": "M",
+   "weight": 64.3,
+   "height": 180.3
+  },
+  {
+   "caseid": 140158,
+   "age": 63.0,
+   "sex": "M",
+   "weight": 98.8,
+   "height": 180.5
+  },
+  {
+   "caseid": 140223,
+   "age": 37.0,
+   "sex": "M",
+   "weight": 78.3,
+   "height": 173.6
+  },
+  {
+   "caseid": 140230,
+   "age": 69.0,
+   "sex": "M",
+   "weight": 95.3,
+   "height": 177.5
+  },
+  {
+   "caseid": 140237,
+   "age": 31.0,
+   "sex": "F",
+   "weight": 82.4,
+   "height": 175.2
+  },
+  {
+   "caseid": 140243,
+   "age": 27.0,
+   "sex": "F",
+   "weight": 78.2,
+   "height": 167.6
+  },
+  {
+   "caseid": 140244,
+   "age": 22.0,
+   "sex": "F",
+   "weight": 64.2,
+   "height": 162.4
+  },
+  {
+   "caseid": 140282,
+   "age": 73.0,
+   "sex": "M",
+   "weight": 89.6,
+   "height": 169.0
+  },
+  {
+   "caseid": 140315,
+   "age": 33.0,
+   "sex": "M",
+   "weight": 83.6,
+   "height": 176.7
+  },
+  {
+   "caseid": 140330,
+   "age": 80.0,
+   "sex": "M",
+   "weight": 66.6,
+   "height": 164.5
+  },
+  {
+   "caseid": 140381,
+   "age": 62.0,
+   "sex": "F",
+   "weight": 74.7,
+   "height": 152.5
+  },
+  {
+   "caseid": 140423,
+   "age": 51.0,
+   "sex": "F",
+   "weight": 82.9,
+   "height": 163.2
+  },
+  {
+   "caseid": 140451,
+   "age": 73.0,
+   "sex": "F",
+   "weight": 76.3,
+   "height": 160.2
+  },
+  {
+   "caseid": 140466,
+   "age": 61.0,
+   "sex": "F",
+   "weight": 45.0,
+   "height": 158.0
+  },
+  {
+   "caseid": 140475,
+   "age": 69.0,
+   "sex": "M",
+   "weight": 84.8,
+   "height": 171.1
+  },
+  {
+   "caseid": 140483,
+   "age": 80.0,
+   "sex": "M",
+   "weight": 87.1,
+   "height": 170.4
+  },
+  {
+   "caseid": 140493,
+   "age": 63.0,
+   "sex": "F",
+   "weight": 84.5,
+   "height": 159.9
+  },
+  {
+   "caseid": 140512,
+   "age": 36.0,
+   "sex": "F",
+   "weight": 57.8,
+   "height": 163.2
+  },
+  {
+   "caseid": 140514,
+   "age": 43.0,
+   "sex": "M",
+   "weight": 66.0,
+   "height": 179.0
+  },
+  {
+   "caseid": 140541,
+   "age": 57.0,
+   "sex": "M",
+   "weight": 75.9,
+   "height": 172.6
+  },
+  {
+   "caseid": 140571,
+   "age": 22.0,
+   "sex": "F",
+   "weight": 55.9,
+   "height": 160.9
+  },
+  {
+   "caseid": 140592,
+   "age": 70.0,
+   "sex": "F",
+   "weight": 68.5,
+   "height": 145.5
+  },
+  {
+   "caseid": 140609,
+   "age": 21.0,
+   "sex": "F",
+   "weight": 86.4,
+   "height": 163.4
+  },
+  {
+   "caseid": 140618,
+   "age": 24.0,
+   "sex": "M",
+   "weight": 91.1,
+   "height": 184.4
+  },
+  {
+   "caseid": 140672,
+   "age": 29.0,
+   "sex": "F",
+   "weight": 66.8,
+   "height": 156.1
+  },
+  {
+   "caseid": 140673,
+   "age": 67.0,
+   "sex": "M",
+   "weight": 100.8,
+   "height": 187.7
+  },
+  {
+   "caseid": 140724,
+   "age": 46.0,
+   "sex": "M",
+   "weight": 106.5,
+   "height": 175.8
+  },
+  {
+   "caseid": 140726,
+   "age": 24.0,
+   "sex": "F",
+   "weight": 83.3,
+   "height": 154.5
+  },
+  {
+   "caseid": 140730,
+   "age": 65.0,
+   "sex": "M",
+   "weight": 78.0,
+   "height": 180.2
+  },
+  {
+   "caseid": 140731,
+   "age": 42.0,
+   "sex": "F",
+   "weight": 69.7,
+   "height": 166.8
+  },
+  {
+   "caseid": 140753,
+   "age": 36.0,
+   "sex": "F",
+   "weight": 47.6,
+   "height": 146.1
+  },
+  {
+   "caseid": 140757,
+   "age": 58.0,
+   "sex": "F",
+   "weight": 65.3,
+   "height": 152.2
+  },
+  {
+   "caseid": 140758,
+   "age": 35.0,
+   "sex": "M",
+   "weight": 84.6,
+   "height": 174.1
+  },
+  {
+   "caseid": 140804,
+   "age": 30.0,
+   "sex": "M",
+   "weight": 82.8,
+   "height": 181.5
+  },
+  {
+   "caseid": 140805,
+   "age": 59.0,
+   "sex": "M",
+   "weight": 65.6,
+   "height": 163.8
+  },
+  {
+   "caseid": 140808,
+   "age": 27.0,
+   "sex": "F",
+   "weight": 64.4,
+   "height": 166.0
+  },
+  {
+   "caseid": 140815,
+   "age": 19.0,
+   "sex": "M",
+   "weight": 53.0,
+   "height": 165.3
+  },
+  {
+   "caseid": 140827,
+   "age": 57.0,
+   "sex": "F",
+   "weight": 51.1,
+   "height": 166.5
+  },
+  {
+   "caseid": 140831,
+   "age": 41.0,
+   "sex": "M",
+   "weight": 108.5,
+   "height": 191.7
+  },
+  {
+   "caseid": 140838,
+   "age": 80.0,
+   "sex": "M",
+   "weight": 96.6,
+   "height": 167.2
+  },
+  {
+   "caseid": 140851,
+   "age": 26.0,
+   "sex": "M",
+   "weight": 98.5,
+   "height": 183.2
+  },
+  {
+   "caseid": 140862,
+   "age": 33.0,
+   "sex": "F",
+   "weight": 47.9,
+   "height": 160.0
+  },
+  {
+   "caseid": 140864,
+   "age": 72.0,
+   "sex": "F",
+   "weight": 68.3,
+   "height": 154.8
+  },
+  {
+   "caseid": 140875,
+   "age": 25.0,
+   "sex": "F",
+   "weight": 55.7,
+   "height": 155.9
+  },
+  {
+   "caseid": 140893,
+   "age": 32.0,
+   "sex": "F",
+   "weight": 80.6,
+   "height": 168.8
+  },
+  {
+   "caseid": 140894,
+   "age": 46.0,
+   "sex": "M",
+   "weight": 87.4,
+   "height": 170.0
+  },
+  {
+   "caseid": 140898,
+   "age": 42.0,
+   "sex": "F",
+   "weight": 79.0,
+   "height": 164.4
+  },
+  {
+   "caseid": 140902,
+   "age": 31.0,
+   "sex": "M",
+   "weight": 96.0,
+   "height": 185.4
+  },
+  {
+   "caseid": 140909,
+   "age": 65.0,
+   "sex": "F",
+   "weight": 60.0,
+   "height": 162.7
+  },
+  {
+   "caseid": 140948,
+   "age": 19.0,
+   "sex": "F",
+   "weight": 67.6,
+   "height": 161.0
+  },
+  {
+   "caseid": 140985,
+   "age": 75.0,
+   "sex": "F",
+   "weight": 88.1,
+   "height": 162.8
+  },
+  {
+   "caseid": 141001,
+   "age": 32.0,
+   "sex": "F",
+   "weight": 84.8,
+   "height": 165.0
+  },
+  {
+   "caseid": 141027,
+   "age": 59.0,
+   "sex": "M",
+   "weight": 80.4,
+   "height": 169.3
+  },
+  {
+   "caseid": 141032,
+   "age": 45.0,
+   "sex": "M",
+   "weight": 76.9,
+   "height": 178.4
+  },
+  {
+   "caseid": 141058,
+   "age": 42.0,
+   "sex": "M",
+   "weight": 84.9,
+   "height": 179.7
+  },
+  {
+   "caseid": 141068,
+   "age": 75.0,
+   "sex": "F",
+   "weight": 76.0,
+   "height": 166.7
+  },
+  {
+   "caseid": 141071,
+   "age": 42.0,
+   "sex": "M",
+   "weight": 81.2,
+   "height": 172.1
+  },
+  {
+   "caseid": 141079,
+   "age": 77.0,
+   "sex": "F",
+   "weight": 72.7,
+   "height": 164.5
+  },
+  {
+   "caseid": 141096,
+   "age": 34.0,
+   "sex": "F",
+   "weight": 59.0,
+   "height": 162.4
+  },
+  {
+   "caseid": 141141,
+   "age": 51.0,
+   "sex": "F",
+   "weight": 60.7,
+   "height": 159.6
+  },
+  {
+   "caseid": 141144,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 83.2,
+   "height": 158.0
+  },
+  {
+   "caseid": 141154,
+   "age": 64.0,
+   "sex": "M",
+   "weight": 84.6,
+   "height": 172.1
+  },
+  {
+   "caseid": 141167,
+   "age": 30.0,
+   "sex": "M",
+   "weight": 58.4,
+   "height": 174.1
+  },
+  {
+   "caseid": 141168,
+   "age": 34.0,
+   "sex": "F",
+   "weight": 78.0,
+   "height": 158.8
+  },
+  {
+   "caseid": 141182,
+   "age": 42.0,
+   "sex": "F",
+   "weight": 73.5,
+   "height": 159.7
+  },
+  {
+   "caseid": 141213,
+   "age": 41.0,
+   "sex": "M",
+   "weight": 116.8,
+   "height": 186.4
+  },
+  {
+   "caseid": 141232,
+   "age": 53.0,
+   "sex": "M",
+   "weight": 85.9,
+   "height": 179.5
+  },
+  {
+   "caseid": 141247,
+   "age": 55.0,
+   "sex": "F",
+   "weight": 88.1,
+   "height": 166.8
+  },
+  {
+   "caseid": 141251,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 51.1,
+   "height": 150.1
+  },
+  {
+   "caseid": 141253,
+   "age": 53.0,
+   "sex": "M",
+   "weight": 75.3,
+   "height": 175.3
+  },
+  {
+   "caseid": 141269,
+   "age": 48.0,
+   "sex": "M",
+   "weight": 105.0,
+   "height": 182.3
+  },
+  {
+   "caseid": 141298,
+   "age": 49.0,
+   "sex": "M",
+   "weight": 69.0,
+   "height": 178.6
+  },
+  {
+   "caseid": 141309,
+   "age": 55.0,
+   "sex": "M",
+   "weight": 93.4,
+   "height": 179.4
+  },
+  {
+   "caseid": 141345,
+   "age": 31.0,
+   "sex": "F",
+   "weight": 69.9,
+   "height": 164.5
+  },
+  {
+   "caseid": 141366,
+   "age": 53.0,
+   "sex": "M",
+   "weight": 75.6,
+   "height": 172.0
+  },
+  {
+   "caseid": 141383,
+   "age": 20.0,
+   "sex": "M",
+   "weight": 91.1,
+   "height": 185.3
+  },
+  {
+   "caseid": 141413,
+   "age": 22.0,
+   "sex": "F",
+   "weight": 82.0,
+   "height": 171.8
+  },
+  {
+   "caseid": 141441,
+   "age": 56.0,
+   "sex": "F",
+   "weight": 78.5,
+   "height": 170.4
+  },
+  {
+   "caseid": 141446,
+   "age": 52.0,
+   "sex": "F",
+   "weight": 83.8,
+   "height": 167.7
+  },
+  {
+   "caseid": 141511,
+   "age": 73.0,
+   "sex": "F",
+   "weight": 75.8,
+   "height": 157.6
+  },
+  {
+   "caseid": 141514,
+   "age": 73.0,
+   "sex": "F",
+   "weight": 59.8,
+   "height": 134.2
+  },
+  {
+   "caseid": 141547,
+   "age": 53.0,
+   "sex": "F",
+   "weight": 69.7,
+   "height": 164.3
+  },
+  {
+   "caseid": 141574,
+   "age": 23.0,
+   "sex": "F",
+   "weight": 88.6,
+   "height": 160.6
+  },
+  {
+   "caseid": 141645,
+   "age": 69.0,
+   "sex": "F",
+   "weight": 82.6,
+   "height": 160.5
+  },
+  {
+   "caseid": 141701,
+   "age": 63.0,
+   "sex": "F",
+   "weight": 71.0,
+   "height": 154.6
+  },
+  {
+   "caseid": 141762,
+   "age": 77.0,
+   "sex": "F",
+   "weight": 71.6,
+   "height": 156.3
+  },
+  {
+   "caseid": 141770,
+   "age": 36.0,
+   "sex": "F",
+   "weight": 91.4,
+   "height": 175.8
+  },
+  {
+   "caseid": 141774,
+   "age": 62.0,
+   "sex": "M",
+   "weight": 76.7,
+   "height": 157.9
+  },
+  {
+   "caseid": 141795,
+   "age": 39.0,
+   "sex": "F",
+   "weight": 83.8,
+   "height": 159.6
+  },
+  {
+   "caseid": 141802,
+   "age": 23.0,
+   "sex": "F",
+   "weight": 94.5,
+   "height": 164.6
+  },
+  {
+   "caseid": 141821,
+   "age": 71.0,
+   "sex": "M",
+   "weight": 80.1,
+   "height": 175.4
+  },
+  {
+   "caseid": 141845,
+   "age": 53.0,
+   "sex": "F",
+   "weight": 89.8,
+   "height": 172.6
+  },
+  {
+   "caseid": 141860,
+   "age": 62.0,
+   "sex": "F",
+   "weight": 80.3,
+   "height": 166.4
+  },
+  {
+   "caseid": 141878,
+   "age": 19.0,
+   "sex": "M",
+   "weight": 88.6,
+   "height": 182.3
+  },
+  {
+   "caseid": 141884,
+   "age": 47.0,
+   "sex": "F",
+   "weight": 82.8,
+   "height": 173.4
+  },
+  {
+   "caseid": 141896,
+   "age": 25.0,
+   "sex": "M",
+   "weight": 98.5,
+   "height": 191.7
+  },
+  {
+   "caseid": 141901,
+   "age": 30.0,
+   "sex": "F",
+   "weight": 63.5,
+   "height": 165.7
+  },
+  {
+   "caseid": 141902,
+   "age": 19.0,
+   "sex": "M",
+   "weight": 61.1,
+   "height": 169.8
+  },
+  {
+   "caseid": 141903,
+   "age": 56.0,
+   "sex": "M",
+   "weight": 73.8,
+   "height": 172.8
+  },
+  {
+   "caseid": 141933,
+   "age": 34.0,
+   "sex": "M",
+   "weight": 86.4,
+   "height": 182.8
+  },
+  {
+   "caseid": 141989,
+   "age": 79.0,
+   "sex": "F",
+   "weight": 70.0,
+   "height": 152.9
+  },
+  {
+   "caseid": 142037,
+   "age": 75.0,
+   "sex": "F",
+   "weight": 52.9,
+   "height": 154.6
+  },
+  {
+   "caseid": 142038,
+   "age": 23.0,
+   "sex": "F",
+   "weight": 80.1,
+   "height": 159.9
+  },
+  {
+   "caseid": 142048,
+   "age": 21.0,
+   "sex": "M",
+   "weight": 79.3,
+   "height": 182.9
+  },
+  {
+   "caseid": 142091,
+   "age": 35.0,
+   "sex": "F",
+   "weight": 56.6,
+   "height": 166.4
+  },
+  {
+   "caseid": 142117,
+   "age": 29.0,
+   "sex": "F",
+   "weight": 78.9,
+   "height": 174.1
+  },
+  {
+   "caseid": 142179,
+   "age": 24.0,
+   "sex": "F",
+   "weight": 53.7,
+   "height": 164.5
+  },
+  {
+   "caseid": 142199,
+   "age": 70.0,
+   "sex": "F",
+   "weight": 49.2,
+   "height": 159.2
+  },
+  {
+   "caseid": 142208,
+   "age": 28.0,
+   "sex": "F",
+   "weight": 88.1,
+   "height": 159.0
+  },
+  {
+   "caseid": 142216,
+   "age": 57.0,
+   "sex": "F",
+   "weight": 72.1,
+   "height": 171.4
+  },
+  {
+   "caseid": 142219,
+   "age": 76.0,
+   "sex": "F",
+   "weight": 55.8,
+   "height": 160.3
+  },
+  {
+   "caseid": 142233,
+   "age": 19.0,
+   "sex": "M",
+   "weight": 102.1,
+   "height": 175.8
+  },
+  {
+   "caseid": 142241,
+   "age": 51.0,
+   "sex": "M",
+   "weight": 102.4,
+   "height": 173.5
+  },
+  {
+   "caseid": 142267,
+   "age": 57.0,
+   "sex": "M",
+   "weight": 74.4,
+   "height": 176.9
+  },
+  {
+   "caseid": 142268,
+   "age": 32.0,
+   "sex": "M",
+   "weight": 75.9,
+   "height": 179.8
+  },
+  {
+   "caseid": 142290,
+   "age": 60.0,
+   "sex": "M",
+   "weight": 104.3,
+   "height": 177.5
+  },
+  {
+   "caseid": 142293,
+   "age": 44.0,
+   "sex": "M",
+   "weight": 83.1,
+   "height": 170.6
+  },
+  {
+   "caseid": 142295,
+   "age": 80.0,
+   "sex": "F",
+   "weight": 94.0,
+   "height": 168.5
+  }
+ ]
+}

@@ -1,0 +1,4 @@
+a,b,n_patients,mean_difference,wilcoxon_p
+quantum_full,pid_tuned,600,-0.04514579056467234,0.8296402908338403
+quantum_full,classical_matched,600,-0.034354846711106016,0.1304674463875207
+quantum_full,quantum_disabled,600,-0.007416944971864682,0.0924794572352319

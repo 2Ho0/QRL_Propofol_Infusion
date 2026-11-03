@@ -1,0 +1,31 @@
+# Versions the experiments ran with (Python 3.11.14, Windows 11).
+
+# PyTorch: install the CUDA build for your system first (https://pytorch.org).
+# The experiments used 2.11.0+cu128.
+torch>=2.11
+
+# Quantum circuit: PennyLane with the JAX interface, run on the CPU
+pennylane==0.39.0
+pennylane-lightning==0.39.0
+jax==0.4.30
+jaxlib==0.4.30
+
+# Scientific computing (JAX 0.4.30 needs NumPy < 2)
+numpy==1.26.4
+scipy==1.16.3
+pandas==3.0.2
+pyarrow==25.0.0
+
+# Environment and data
+gymnasium==1.2.3
+vitaldb==1.7.2
+
+# Utilities and plotting
+pyyaml==6.0
+tqdm==4.70.0
+psutil==7.2.2
+matplotlib==3.7.5
+seaborn==0.13.2
+
+# Tests
+pytest==9.1.1

@@ -1,0 +1,18 @@
+# Files covered by the code fingerprint in
+# protocols/campaign_locked_protocol.json are stored byte for byte.
+# Line-ending conversion would change their bytes, and a fresh clone would no
+# longer reproduce the fingerprint (check with tools/verify_code_fingerprint.py).
+src/**/*.py -text
+config/hyperparameters.yaml -text
+experiments/run_pilot.py -text
+experiments/train_hybrid.py -text
+experiments/run_revision_campaign.py -text
+experiments/run_v3_campaign.py -text
+logs/revision_v2/pid_tuning/selected_pid.json -text
+
+# The protocol files, the PID tuning protocol and the split manifest keep the
+# bytes they were written with, so their SHA-256 values in README hold in every
+# clone.
+protocols/** -text
+logs/revision_v2/pid_tuning/protocol.json -text
+logs/revision_v2/dataset_wtfix/dataset_manifest.json -text

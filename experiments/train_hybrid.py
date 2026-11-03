@@ -1,0 +1,1947 @@
+"""
+Hybrid Training: Offline Pre-training → Online Fine-tuning
+===========================================================
+
+Complete hybrid training pipeline:
+1. Stage 1: Offline pre-training on VitalDB real patient data (80%)
+2. Stage 2: Online fine-tuning on simulator (new synthetic data)
+3. Stage 3: Testing on both VitalDB test set (10%) and simulator test set
+
+Data Split Strategy:
+--------------------
+VitalDB Dataset (100 cases)
+├─ Train (80 cases): Offline pre-training
+├─ Val (10 cases): Hyperparameter tuning
+└─ Test (10 cases): Final evaluation
+
+Simulator (Unlimited)
+├─ Train: Online fine-tuning episodes
+└─ Test: 20 diverse synthetic patients
+
+Usage:
+    # Full hybrid training
+    python experiments/train_hybrid.py --n_cases 100 --offline_epochs 50 --online_episodes 500
+    
+    # Skip offline and resume from checkpoint
+    python experiments/train_hybrid.py --skip_offline --resume logs/stage1_best.pt --online_episodes 500
+    
+    # Offline only (no online fine-tuning)
+    python experiments/train_hybrid.py --n_cases 100 --offline_epochs 50 --skip_online
+"""
+
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent / 'src'))
+
+import argparse
+import pickle
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+import yaml
+from datetime import datetime
+from collections import deque
+from typing import Dict, Tuple, Optional, Sequence
+
+from agents.quantum_agent import QuantumDDPGAgent
+from environment.propofol_env import PropofolEnv
+from environment.patient_simulator import create_patient_population
+from environment.env_seeds import checkpoint_env_seed, training_env_seed
+from data.vitaldb_loader import VitalDBLoader, VitalDBDataset, PatientSequenceDataset
+from models.networks import soft_update
+
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Hybrid Quantum RL Training: Offline → Online"
+    )
+    
+    # Stage control
+    parser.add_argument('--skip_offline', action='store_true',
+                        help='Skip offline pre-training stage')
+    parser.add_argument('--skip_online', action='store_true',
+                        help='Skip online fine-tuning stage')
+    parser.add_argument('--resume', type=str, default=None,
+                        help='Resume from checkpoint (for skipping offline)')
+    
+    # Data parameters
+    parser.add_argument('--n_cases', type=int, default=20,
+                        help='Total number of VitalDB cases to load')
+    parser.add_argument('--data_path', type=str, default=None,
+                        help='Path to pre-saved VitalDB data (skip loading)')
+    
+    # Stage 1: Offline parameters
+    parser.add_argument('--offline_epochs', type=int, default=50,
+                        help='Number of epochs for offline pre-training')
+    parser.add_argument('--batch_size', type=int, default=256,
+                        help='Batch size for offline training')
+    parser.add_argument('--bc_weight', type=float, default=0.8,
+                        help='Weight for behavioral cloning loss (0-1)')
+    
+    # Stage 2: Online parameters
+    parser.add_argument('--online_episodes', type=int, default=500,
+                        help='Number of episodes for online fine-tuning')
+    parser.add_argument('--warmup_episodes', type=int, default=50,
+                        help='Episodes without exploration before enabling it')
+    
+    # General parameters
+    parser.add_argument('--config', type=str, 
+                        default='config/hyperparameters.yaml',
+                        help='Path to configuration file')
+    parser.add_argument('--encoder', type=str, default='none',
+                        choices=['none', 'lstm', 'transformer'],
+                        help='Temporal encoder type')
+    parser.add_argument('--dual_drug', action='store_true',
+                        help='Use dual drug control (propofol + remifentanil)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed')
+    parser.add_argument('--log_dir', type=str, default='logs',
+                        help='Directory for logs and checkpoints')
+    parser.add_argument('--eval_interval', type=int, default=50,
+                        help='Evaluate every N episodes/epochs')
+    
+    # Reward function
+    parser.add_argument('--reward_type', type=str, default='potential',
+                       choices=['simple', 'paper', 'hybrid', 'potential'],
+                       help='Reward function type: simple (original), paper (equation 1-3), hybrid (dense+sparse), potential (potential-based shaping)')
+    
+    
+    return parser.parse_args()
+
+
+def setup_directories(log_dir: str) -> Dict[str, Path]:
+    """Set up directories for hybrid training."""
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    base_dir = Path(log_dir) / f'hybrid_{timestamp}'
+    
+    dirs = {
+        'base': base_dir,
+        'checkpoints': base_dir / 'checkpoints',
+        'figures': base_dir / 'figures',
+        'stage1': base_dir / 'stage1_offline',
+        'stage2': base_dir / 'stage2_online',
+        'stage3': base_dir / 'stage3_test'
+    }
+    
+    for dir_path in dirs.values():
+        dir_path.mkdir(parents=True, exist_ok=True)
+    
+    return dirs
+
+
+def split_vitaldb_data(
+    n_total_cases: int = 100,
+    data_path: str = None,
+    dual_drug: bool = False
+) -> Tuple[Dict, Dict, Dict]:
+    """
+    Split VitalDB data into train/val/test sets (80/10/10).
+    
+    Args:
+        n_total_cases: Total number of cases to load
+        data_path: Path to pre-saved data (optional)
+        dual_drug: If True, load dual drug data (propofol + remifentanil)
+    
+    Returns:
+        train_data, val_data, test_data dictionaries
+    """
+    print("\n" + "="*70)
+    print("DATA LOADING & SPLITTING")
+    print("="*70)
+    
+    if data_path and Path(data_path).exists():
+        print(f"Loading pre-saved data from {data_path}...")
+        with open(data_path, 'rb') as f:
+            all_data = pickle.load(f)
+        
+        all_states = all_data['states']
+        all_actions = all_data['actions']
+        all_rewards = all_data['rewards']
+        all_next_states = all_data['next_states']
+        
+        print(f"✓ Loaded {len(all_states):,} transitions")
+    else:
+        drug_type = "dual drug (propofol + remifentanil)" if dual_drug else "single drug (propofol)"
+        print(f"Loading VitalDB data ({n_total_cases} cases, {drug_type})...")
+        loader = VitalDBLoader(bis_range=(30, 70))
+        
+        # Load data (returns dict with states, actions, rewards, next_states, dones)
+        if dual_drug:
+            data = loader.prepare_training_data_dualdrug(n_cases=n_total_cases)
+        else:
+            data = loader.prepare_training_data(n_cases=n_total_cases)
+        
+        all_states = data['states']
+        all_actions = data['actions']
+        all_rewards = data['rewards']
+        all_next_states = data['next_states']
+        
+        state_dim = all_states.shape[1] if len(all_states.shape) > 1 else 1
+        action_dim = all_actions.shape[1] if len(all_actions.shape) > 1 else 1
+        print(f"✓ Loaded {len(all_states):,} transitions (state_dim={state_dim}, action_dim={action_dim})")
+    
+    # Split by percentages (preserving temporal structure within cases)
+    n_total = len(all_states)
+    train_end = int(n_total * 0.8)
+    val_end = int(n_total * 0.9)
+    
+    # Train set (80%)
+    train_data = {
+        'states': all_states[:train_end],
+        'actions': all_actions[:train_end],
+        'rewards': all_rewards[:train_end],
+        'next_states': all_next_states[:train_end],
+        'dones': np.zeros(train_end, dtype=bool)
+    }
+    
+    # Validation set (10%)
+    val_data = {
+        'states': all_states[train_end:val_end],
+        'actions': all_actions[train_end:val_end],
+        'rewards': all_rewards[train_end:val_end],
+        'next_states': all_next_states[train_end:val_end],
+        'dones': np.zeros(val_end - train_end, dtype=bool)
+    }
+    
+    # Test set (10%)
+    test_data = {
+        'states': all_states[val_end:],
+        'actions': all_actions[val_end:],
+        'rewards': all_rewards[val_end:],
+        'next_states': all_next_states[val_end:],
+        'dones': np.zeros(n_total - val_end, dtype=bool)
+    }
+    
+    print(f"\n✓ Data split complete:")
+    print(f"  Train: {len(train_data['states']):,} transitions (80%)")
+    print(f"  Val:   {len(val_data['states']):,} transitions (10%)")
+    print(f"  Test:  {len(test_data['states']):,} transitions (10%)")
+    print(f"  BIS range: [{50 - all_states[:, 0].max():.0f}, {50 - all_states[:, 0].min():.0f}]")
+    
+    return train_data, val_data, test_data
+
+
+def stage1_offline_pretraining(
+    agent: QuantumDDPGAgent,
+    train_data: Dict,
+    val_data: Dict,
+    n_epochs: int,
+    batch_size: int,
+    bc_weight: float,
+    dirs: Dict[str, Path],
+    eval_interval: int = 10,
+    use_cql: bool = False,
+    cql_alpha: float = 1.0,
+    cql_temp: float = 1.0,
+    cql_num_random: int = 5,
+    cql_warmup_epochs: int = 50,
+    bc_warmup_epochs: int = 20,
+    device: torch.device = None,
+    num_workers: int = 4,
+    use_amp: bool = False,
+) -> QuantumDDPGAgent:
+    """
+    Stage 1: Offline pre-training on VitalDB train set.
+    
+    Uses Behavioral Cloning + Off-policy RL (or CQL) on real patient data.
+    
+    Args:
+        agent: Quantum DDPG agent
+        train_data: Training data dictionary
+        val_data: Validation data dictionary
+        n_epochs: Number of training epochs
+        batch_size: Batch size
+        bc_weight: Weight for BC loss (0-1)
+        dirs: Directory paths
+        eval_interval: Evaluation interval
+        use_cql: Use Conservative Q-Learning instead of standard RL
+        cql_alpha: CQL penalty weight
+        cql_temp: Temperature for CQL logsumexp
+        cql_num_random: Number of random actions for CQL
+        cql_warmup_epochs: Number of epochs to use CQL (후반에는 CQL 비활성화)
+        device: Torch device
+        num_workers: Number of data loader workers
+        use_amp: Use Automatic Mixed Precision for faster training
+    
+    Returns:
+        Trained agent
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    print("\n" + "="*70)
+    print("STAGE 1: OFFLINE PRE-TRAINING (VitalDB Real Data)")
+    print("="*70)
+    print(f"Training on {len(train_data['states']):,} transitions")
+    print(f"Quantum Actor learning from expert demonstrations")
+    print(f"Device: {device}")
+    
+    # Create true patient-level temporal windows when a temporal encoder is in
+    # use.  Falling back to VitalDBDataset keeps no-encoder and legacy callers
+    # compatible.
+    temporal = agent.encoder is not None and "caseids" in train_data
+    if not temporal and np.asarray(train_data["states"]).ndim == 3:
+        train_data = dict(train_data)
+        train_data["states"] = np.asarray(train_data["states"])[:, -1, :]
+        train_data["next_states"] = np.asarray(
+            train_data["next_states"])[:, -1, :]
+    dataset_type = PatientSequenceDataset if temporal else VitalDBDataset
+    dataset_kwargs = {"sequence_length": agent.sequence_length} if temporal else {}
+    train_dataset = dataset_type(train_data, **dataset_kwargs)
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=num_workers > 0
+        )
+    
+    val_temporal = agent.encoder is not None and "caseids" in val_data
+    if not val_temporal and np.asarray(val_data["states"]).ndim == 3:
+        val_data = dict(val_data)
+        val_data["states"] = np.asarray(val_data["states"])[:, -1, :]
+        val_data["next_states"] = np.asarray(val_data["next_states"])[:, -1, :]
+    val_dataset_type = PatientSequenceDataset if val_temporal else VitalDBDataset
+    val_kwargs = {"sequence_length": agent.sequence_length} if val_temporal else {}
+    val_dataset = val_dataset_type(val_data, **val_kwargs)
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=num_workers > 0
+        )
+    
+    # Training metrics
+    best_val_loss = float('inf')
+    best_val_mdape = float('inf')
+    patience_counter = 0
+    patience_limit = 25  # More patience for BC convergence
+    train_history = {'train_loss': [], 'val_loss': [], 'bc_loss': [], 'rl_loss': []}
+    
+    print(f"\nTraining configuration:")
+    print(f"  Epochs: {n_epochs}")
+    print(f"  Batch size: {batch_size}")
+    print(f"  BC weight: {bc_weight:.2f}")
+    print(f"  RL weight: {1 - bc_weight:.2f}")
+    print(f"  Method: {'CQL (Conservative Q-Learning)' if use_cql else 'Standard Off-policy RL'}")
+    if use_cql:
+        print(f"  CQL alpha: {cql_alpha:.2f}")
+        print(f"  CQL temp: {cql_temp:.2f}")
+        print(f"  CQL random actions: {cql_num_random}")
+        print(f"  CQL warmup epochs: {cql_warmup_epochs} (후반 {n_epochs - cql_warmup_epochs} epochs는 CQL 비활성화)")
+    print(f"  Mixed Precision: {'Enabled' if use_amp and torch.cuda.is_available() else 'Disabled'}")
+    print(f"  Num workers: {num_workers}")
+    print(f"  Sequence length: {agent.sequence_length if temporal else 1}")
+    print()
+
+    def _sequence(x: torch.Tensor) -> torch.Tensor:
+        return x if x.dim() == 3 else x.unsqueeze(1)
+
+    from torch.amp import autocast, GradScaler
+    scaler = GradScaler('cuda') if use_amp and torch.cuda.is_available() else None
+    
+    import time
+    epoch_times = []
+    
+    for epoch in tqdm(range(n_epochs), desc="Offline Pre-training"):
+        epoch_start = time.time()
+        epoch_train_bc = []
+        epoch_train_rl = []
+        epoch_train_total = []
+        agent.actor.train()
+        if agent.encoder is not None:
+            agent.encoder.train()
+        
+        # CQL warmup: 초반에만 CQL 사용
+        use_cql_this_epoch = use_cql and epoch < cql_warmup_epochs
+        
+        # BC warmup: Start with pure BC, gradually introduce RL
+        # First bc_warmup_epochs: Pure BC (weight=1.0) for stable initialization
+        # After warmup: Use specified bc_weight for hybrid training
+        if epoch < bc_warmup_epochs:
+            current_bc_weight = 1.0  # Pure BC during warmup
+        else:
+            current_bc_weight = bc_weight  # Hybrid BC+RL after warmup
+        
+        # Training loop
+        for batch in train_loader:
+            states, actions, rewards, next_states, dones = batch
+            
+            # Ensure all tensors are float32 and move to correct device
+            states = states.float().to(device)
+            actions = actions.float().to(device)
+            rewards = rewards.float().to(device)
+            next_states = next_states.float().to(device)
+            dones = dones.float().to(device)
+            
+            # ========== Mixed Precision Training ==========
+            if scaler is not None:
+                # Forward pass with autocast
+                with autocast('cuda'):
+                    # ========== Behavioral Cloning Loss ==========
+                    # Use encoder if available
+                    if agent.encoder is not None:
+                        states_seq = _sequence(states)
+                        encoded_states = agent.encoder(states_seq)
+                        if isinstance(encoded_states, tuple):
+                            encoded_states = encoded_states[0]
+                        encoded_states = encoded_states[:, -1, :] if encoded_states.dim() == 3 else encoded_states
+                        predicted_actions = agent.actor(encoded_states)
+                        
+                        next_states_seq = _sequence(next_states)
+                        encoded_next = agent.encoder_target(next_states_seq)
+                        if isinstance(encoded_next, tuple):
+                            encoded_next = encoded_next[0]
+                        encoded_next = encoded_next[:, -1, :] if encoded_next.dim() == 3 else encoded_next
+                        next_actions = agent.actor_target(encoded_next)
+                    else:
+                        predicted_actions = agent.actor(states)
+                        next_actions = agent.actor_target(next_states)
+                    
+                    bc_loss = torch.nn.functional.mse_loss(predicted_actions, actions)
+                    
+                    # ========== Off-policy RL Loss ==========
+                    # Only compute critic loss if BC weight < 1.0 (pure BC doesn't need critic)
+                    if current_bc_weight < 1.0:
+                        with torch.no_grad():
+                            if agent.encoder is not None:
+                                q1_next, q2_next = agent.critic_target(encoded_next, next_actions)
+                            else:
+                                q1_next, q2_next = agent.critic_target(next_states, next_actions)
+                            target_q = rewards.unsqueeze(1) + agent.gamma * torch.min(q1_next, q2_next) * (1 - dones.unsqueeze(1))
+                        
+                        if agent.encoder is not None:
+                            q1, q2 = agent.critic(encoded_states, actions)
+                        else:
+                            q1, q2 = agent.critic(states, actions)
+                        critic_loss = (
+                            torch.nn.functional.mse_loss(q1, target_q) +
+                            torch.nn.functional.mse_loss(q2, target_q)
+                        ) / 2
+                    else:
+                        # Pure BC: no critic loss
+                        critic_loss = torch.tensor(0.0, device=device)
+                        q1 = torch.tensor(0.0, device=device)
+                        q2 = torch.tensor(0.0, device=device)
+                    
+                    # ========== CQL Penalty (if enabled and in warmup period) ==========
+                    if use_cql_this_epoch:
+                        # Sample random actions
+                        batch_size_cur = states.shape[0]
+                        random_actions = torch.rand(batch_size_cur, cql_num_random, actions.shape[1], device=device)
+                        random_actions = random_actions * 2 - 1  # Scale to [-1, 1]
+                        
+                        # Repeat states for random actions
+                        if agent.encoder is not None:
+                            encoded_states_repeated = encoded_states.unsqueeze(1).repeat(1, cql_num_random, 1)
+                            encoded_states_flat = encoded_states_repeated.reshape(-1, encoded_states.shape[1])
+                        else:
+                            states_repeated = states.unsqueeze(1).repeat(1, cql_num_random, 1)
+                            encoded_states_flat = states_repeated.reshape(-1, states.shape[1])
+                        
+                        random_actions_flat = random_actions.reshape(-1, actions.shape[1])
+                        
+                        # Q-values for random actions
+                        q1_random, q2_random = agent.critic(encoded_states_flat, random_actions_flat)
+                        q1_random = q1_random.reshape(batch_size_cur, cql_num_random)
+                        q2_random = q2_random.reshape(batch_size_cur, cql_num_random)
+                        
+                        # CQL penalty: logsumexp of random Q-values minus data Q-values
+                        cql_penalty = (
+                            torch.logsumexp(q1_random / cql_temp, dim=1).mean() +
+                            torch.logsumexp(q2_random / cql_temp, dim=1).mean() -
+                            q1.mean() - q2.mean()
+                        )
+                        
+                        critic_loss = critic_loss + cql_alpha * cql_penalty
+                
+                # Backward with gradient scaling
+                # Only update critic if BC weight < 1.0
+                if current_bc_weight < 1.0:
+                    agent.critic_optimizer.zero_grad()
+                    scaler.scale(critic_loss).backward()
+                    scaler.unscale_(agent.critic_optimizer)
+                    torch.nn.utils.clip_grad_norm_(agent.critic.parameters(), 1.0)
+                    scaler.step(agent.critic_optimizer)
+                
+                # Update Actor with AMP
+                agent.actor_optimizer.zero_grad()
+                if agent.encoder_optimizer is not None:
+                    agent.encoder_optimizer.zero_grad()
+                with autocast('cuda'):
+                    if agent.encoder is not None:
+                        # Recompute encoded states for actor update
+                        states_seq = _sequence(states)
+                        encoded_states_actor = agent.encoder(states_seq)
+                        if isinstance(encoded_states_actor, tuple):
+                            encoded_states_actor = encoded_states_actor[0]
+                        encoded_states_actor = encoded_states_actor[:, -1, :] if encoded_states_actor.dim() == 3 else encoded_states_actor
+                        pred_actions_for_bc = agent.actor(encoded_states_actor)
+                    else:
+                        pred_actions_for_bc = agent.actor(states)
+                    
+                    # Pure BC: only BC loss
+                    if current_bc_weight >= 1.0:
+                        bc_loss_final = torch.nn.functional.mse_loss(pred_actions_for_bc, actions)
+                        combined_actor_loss = bc_loss_final
+                    else:
+                        # Hybrid BC + RL
+                        pred_actions_for_q = agent.actor(encoded_states_actor if agent.encoder is not None else states)
+                        q1_pred, _ = agent.critic(encoded_states_actor if agent.encoder is not None else states, pred_actions_for_q)
+                        bc_loss_final = torch.nn.functional.mse_loss(pred_actions_for_bc, actions)
+                        actor_rl_loss = -q1_pred.mean()
+                        
+                        # Scale RL loss to match BC loss magnitude
+                        # BC loss ~ 0.0001, RL loss ~ -1.0, so scale RL by 0.0001 to balance
+                        rl_scale = 0.0001
+                        combined_actor_loss = current_bc_weight * bc_loss_final + (1 - current_bc_weight) * rl_scale * actor_rl_loss
+                
+                scaler.scale(combined_actor_loss).backward()
+                scaler.unscale_(agent.actor_optimizer)
+                torch.nn.utils.clip_grad_norm_(agent.actor.parameters(), 1.0)
+                if agent.encoder_optimizer is not None:
+                    scaler.unscale_(agent.encoder_optimizer)
+                    torch.nn.utils.clip_grad_norm_(agent.encoder.parameters(), 1.0)
+                scaler.step(agent.actor_optimizer)
+                if agent.encoder_optimizer is not None:
+                    scaler.step(agent.encoder_optimizer)
+                
+                scaler.update()
+                
+            else:
+                # Standard training without AMP
+                # ========== Behavioral Cloning Loss ==========
+                # Use encoder if available
+                if agent.encoder is not None:
+                    # For LSTM/Transformer encoder
+                    states_seq = _sequence(states)
+                    encoded_states = agent.encoder(states_seq)
+                    if isinstance(encoded_states, tuple):  # LSTM returns (output, hidden)
+                        encoded_states = encoded_states[0]
+                    # Get last timestep
+                    encoded_states = encoded_states[:, -1, :] if encoded_states.dim() == 3 else encoded_states
+                    predicted_actions = agent.actor(encoded_states).float()
+                    
+                    # For target network
+                    next_states_seq = _sequence(next_states)
+                    encoded_next = agent.encoder_target(next_states_seq)
+                    if isinstance(encoded_next, tuple):
+                        encoded_next = encoded_next[0]
+                    encoded_next = encoded_next[:, -1, :] if encoded_next.dim() == 3 else encoded_next
+                    next_actions = agent.actor_target(encoded_next).float()
+                else:
+                    # No encoder, use raw states
+                    predicted_actions = agent.actor(states).float()
+                    next_actions = agent.actor_target(next_states).float()
+                
+                bc_loss = torch.nn.functional.mse_loss(predicted_actions, actions)
+                
+                # ========== Off-policy RL Loss ==========
+                # Only compute critic loss if BC weight < 1.0
+                if current_bc_weight < 1.0:
+                    with torch.no_grad():
+                        # next_actions already computed above (with or without encoder)
+                        if agent.encoder is not None:
+                            q1_next, q2_next = agent.critic_target(encoded_next, next_actions)
+                        else:
+                            q1_next, q2_next = agent.critic_target(next_states, next_actions)
+                        q1_next = q1_next.float()
+                        q2_next = q2_next.float()
+                        target_q = (rewards.unsqueeze(1) + agent.gamma * torch.min(q1_next, q2_next) * (1 - dones.unsqueeze(1))).float()
+                    
+                    if agent.encoder is not None:
+                        q1, q2 = agent.critic(encoded_states, actions)
+                    else:
+                        q1, q2 = agent.critic(states, actions)
+                    q1 = q1.float()
+                    q2 = q2.float()
+                    critic_loss = (
+                        torch.nn.functional.mse_loss(q1, target_q) +
+                        torch.nn.functional.mse_loss(q2, target_q)
+                    ) / 2
+                else:
+                    # Pure BC: no critic loss
+                    critic_loss = torch.tensor(0.0, device=device)
+                    q1 = torch.tensor(0.0, device=device)
+                    q2 = torch.tensor(0.0, device=device)
+                
+                # ========== CQL Penalty (if enabled and in warmup period) ==========
+                if use_cql_this_epoch:
+                    # Sample random actions
+                    batch_size_cur = states.shape[0]
+                    random_actions = torch.rand(batch_size_cur, cql_num_random, actions.shape[1], device=device)
+                    random_actions = random_actions * 2 - 1  # Scale to [-1, 1]
+                    
+                    # Repeat states for random actions
+                    if agent.encoder is not None:
+                        # Use encoded states
+                        encoded_states_repeated = encoded_states.unsqueeze(1).repeat(1, cql_num_random, 1)
+                        encoded_states_flat = encoded_states_repeated.reshape(-1, encoded_states.shape[1])
+                    else:
+                        states_repeated = states.unsqueeze(1).repeat(1, cql_num_random, 1)
+                        encoded_states_flat = states_repeated.reshape(-1, states.shape[1])
+                    
+                    random_actions_flat = random_actions.reshape(-1, actions.shape[1])
+                    
+                    # Q-values for random actions
+                    q1_random, q2_random = agent.critic(encoded_states_flat, random_actions_flat)
+                    q1_random = q1_random.reshape(batch_size_cur, cql_num_random).float()
+                    q2_random = q2_random.reshape(batch_size_cur, cql_num_random).float()
+                    
+                    # CQL penalty: logsumexp of random Q-values minus data Q-values
+                    cql_penalty = (
+                        torch.logsumexp(q1_random / cql_temp, dim=1).mean() +
+                        torch.logsumexp(q2_random / cql_temp, dim=1).mean() -
+                        q1.mean() - q2.mean()
+                    )
+                    
+                    critic_loss = critic_loss + cql_alpha * cql_penalty
+            
+                # ========== Combined Update ==========
+                # Update Critic first (only if BC weight < 1.0)
+                if current_bc_weight < 1.0:
+                    agent.critic_optimizer.zero_grad()
+                    critic_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(agent.critic.parameters(), 1.0)
+                    agent.critic_optimizer.step()
+                
+                # Update Actor (BC only or BC + policy gradient)
+                agent.actor_optimizer.zero_grad()
+                if agent.encoder_optimizer is not None:
+                    agent.encoder_optimizer.zero_grad()
+                
+                # Pure BC: only BC loss
+                if current_bc_weight >= 1.0:
+                    if agent.encoder is not None:
+                        states_seq = _sequence(states)
+                        encoded_states_actor = agent.encoder(states_seq)
+                        if isinstance(encoded_states_actor, tuple):
+                            encoded_states_actor = encoded_states_actor[0]
+                        if encoded_states_actor.dim() == 3:
+                            encoded_states_actor = encoded_states_actor[:, -1, :]
+                        pred_actions = agent.actor(encoded_states_actor)
+                    else:
+                        pred_actions = agent.actor(states)
+                    
+                    actor_loss = torch.nn.functional.mse_loss(pred_actions, actions)
+                else:
+                    # Hybrid BC + RL: recompute actor loss after critic update
+                    if agent.encoder is not None:
+                        states_seq = _sequence(states)
+                        encoded_states = agent.encoder(states_seq)
+                        if isinstance(encoded_states, tuple):
+                            encoded_states = encoded_states[0]
+                        # Handle both 2D and 3D encoder outputs
+                        if encoded_states.dim() == 3:
+                            encoded_states = encoded_states[:, -1, :]
+                        pred_actions_for_bc = agent.actor(encoded_states).float()
+                        pred_actions_for_q = agent.actor(encoded_states).float()
+                        q1_pred, _ = agent.critic(encoded_states, pred_actions_for_q)
+                    else:
+                        pred_actions_for_bc = agent.actor(states).float()
+                        pred_actions_for_q = agent.actor(states).float()
+                        q1_pred, _ = agent.critic(states, pred_actions_for_q)
+                    
+                    bc_loss_final = torch.nn.functional.mse_loss(pred_actions_for_bc, actions)
+                    q1_pred = q1_pred.float()
+                    actor_rl_loss = -q1_pred.mean()
+                    
+                    # Scale RL loss to match BC loss magnitude
+                    # BC loss ~ 0.0001, RL loss ~ -1.0, so scale RL by 0.0001 to balance
+                    rl_scale = 0.0001
+                    
+                    # Combined loss - ensure float32
+                    bc_weight_tensor = torch.tensor(current_bc_weight, dtype=torch.float32, device=device)
+                    actor_loss = (bc_weight_tensor * bc_loss_final + (1 - bc_weight_tensor) * rl_scale * actor_rl_loss).float()
+                
+                actor_loss.backward()
+                torch.nn.utils.clip_grad_norm_(agent.actor.parameters(), 1.0)
+                if agent.encoder_optimizer is not None:
+                    torch.nn.utils.clip_grad_norm_(agent.encoder.parameters(), 1.0)
+                agent.actor_optimizer.step()
+                if agent.encoder_optimizer is not None:
+                    agent.encoder_optimizer.step()
+            
+            # Soft update target networks (공통)
+            soft_update(agent.actor_target, agent.actor, agent.tau)
+            if agent.encoder is not None:
+                soft_update(agent.encoder_target, agent.encoder, agent.tau)
+            if current_bc_weight < 1.0:
+                soft_update(agent.critic_target, agent.critic, agent.tau)
+            
+            # Track metrics
+            epoch_train_bc.append(bc_loss.item())
+            
+            # Only track RL losses if BC weight < 1.0
+            if current_bc_weight < 1.0:
+                # Scale RL loss for display to show actual contribution to total loss
+                rl_scale = 0.0001
+                if scaler is not None:
+                    epoch_train_rl.append(actor_rl_loss.item() * rl_scale)
+                    epoch_train_total.append(combined_actor_loss.item() + critic_loss.item())
+                else:
+                    epoch_train_rl.append(actor_rl_loss.item() * rl_scale)
+                    epoch_train_total.append(actor_loss.item() + critic_loss.item())
+            else:
+                # Pure BC: RL loss is 0
+                epoch_train_rl.append(0.0)
+                if scaler is not None:
+                    epoch_train_total.append(combined_actor_loss.item())
+                else:
+                    epoch_train_total.append(actor_loss.item())
+        
+        # Validation loop
+        epoch_val_loss = []
+        epoch_val_mdape = []
+        # Validation must be deterministic.  Transformer dropout was
+        # previously left active, adding noise to checkpoint selection.
+        agent.actor.eval()
+        if agent.encoder is not None:
+            agent.encoder.eval()
+        with torch.no_grad():
+            for batch in val_loader:
+                states, actions, _, _, _ = batch
+                states = states.float().to(device)
+                actions = actions.float().to(device)
+                
+                if agent.encoder is not None:
+                    states_seq = _sequence(states)
+                    encoded_states = agent.encoder(states_seq)
+                    if isinstance(encoded_states, tuple):
+                        encoded_states = encoded_states[0]
+                    # Handle both 2D and 3D encoder outputs
+                    if encoded_states.dim() == 3:
+                        encoded_states = encoded_states[:, -1, :]
+                    predicted_actions = agent.actor(encoded_states)
+                else:
+                    predicted_actions = agent.actor(states)
+                
+                # MSE Loss
+                val_loss = torch.nn.functional.mse_loss(predicted_actions, actions)
+                epoch_val_loss.append(val_loss.item())
+                
+                # MDAPE (Median Absolute Percentage Error)
+                pred_np = predicted_actions.detach().cpu().numpy()
+                act_np = actions.detach().cpu().numpy()
+                ape = np.abs(pred_np - act_np) / (np.abs(act_np) + 1e-8) * 100
+                mdape = np.median(ape)
+                epoch_val_mdape.append(mdape)
+        
+        # Track epoch time
+        epoch_time = time.time() - epoch_start
+        epoch_times.append(epoch_time)
+        avg_epoch_time = np.mean(epoch_times)
+        remaining_epochs = n_epochs - epoch - 1
+        eta_seconds = avg_epoch_time * remaining_epochs
+        eta_minutes = eta_seconds / 60
+        
+        # Record metrics
+        avg_train_bc = np.mean(epoch_train_bc)
+        avg_train_rl = np.mean(epoch_train_rl)
+        avg_train_total = np.mean(epoch_train_total)
+        avg_val_loss = np.mean(epoch_val_loss)
+        avg_val_mdape = np.mean(epoch_val_mdape)
+        
+        train_history['train_loss'].append(avg_train_total)
+        train_history['val_loss'].append(avg_val_loss)
+        train_history['bc_loss'].append(avg_train_bc)
+        train_history['rl_loss'].append(avg_train_rl)
+        train_history['val_mdape'] = train_history.get('val_mdape', [])
+        train_history['val_mdape'].append(avg_val_mdape)
+        
+        # 매 epoch마다 간단한 로그 (한 줄)
+        cql_status = "CQL" if use_cql_this_epoch else "STD"
+        bc_status = f"BC={current_bc_weight:.1f}"  # Show current BC weight
+        print(f"Epoch {epoch+1:3d}/{n_epochs} [{cql_status}|{bc_status}] | Train: {avg_train_total:7.4f} | Val: {avg_val_loss:7.4f} | MDAPE: {avg_val_mdape:6.2f}% | BC: {avg_train_bc:7.4f} | RL: {avg_train_rl:7.4f} | Time: {epoch_time:5.1f}s | ETA: {eta_minutes:5.1f}m")
+        
+        # Periodic detailed logging
+        if epoch % eval_interval == 0 or epoch == n_epochs - 1:
+            print(f"\n  {'='*60}")
+            print(f"  Epoch {epoch+1}/{n_epochs} Detailed Stats:")
+            print(f"  {'='*60}")
+            print(f"  Training Losses:")
+            print(f"    - BC Loss (Behavioral Cloning): {avg_train_bc:.4f}")
+            print(f"    - RL Loss (Policy Gradient):    {avg_train_rl:.4f}")
+            print(f"    - Total Train Loss:             {avg_train_total:.4f}")
+            print(f"  Validation Metrics:")
+            print(f"    - Val Loss (MSE):               {avg_val_loss:.4f}")
+            print(f"    - Val MDAPE:                    {avg_val_mdape:.2f}%")
+            print(f"  Train-Val Gap:                    {avg_train_total - avg_val_loss:+.4f}")
+            print(f"  Time: {epoch_time:.1f}s (avg: {avg_epoch_time:.1f}s) | ETA: {eta_minutes:.1f}min")
+            print(f"  {'='*60}")
+        
+        # Save best model based on validation MDAPE (primary metric)
+        if avg_val_mdape < best_val_mdape:
+            best_val_mdape = avg_val_mdape
+            best_val_loss = avg_val_loss
+            patience_counter = 0  # Reset patience
+            best_path = dirs['stage1'] / 'best_val.pt'
+            agent.save(str(best_path))
+            if epoch % eval_interval == 0:
+                print(f"    → New best model saved (MDAPE: {best_val_mdape:.2f}%, val loss: {best_val_loss:.4f})")
+        else:
+            patience_counter += 1
+            
+        # Early stopping check
+        if patience_counter >= patience_limit:
+            print(f"\n⚠️  Early stopping triggered!")
+            print(f"    No improvement in validation MDAPE for {patience_limit} epochs")
+            print(f"    Best val MDAPE: {best_val_mdape:.2f}%")
+            print(f"    Stopping at epoch {epoch+1}/{n_epochs}")
+            break
+        
+        # Save periodic checkpoints
+        if (epoch + 1) % 20 == 0:
+            checkpoint_path = dirs['stage1'] / f'checkpoint_epoch_{epoch+1}.pt'
+            agent.save(str(checkpoint_path))
+    
+    # Save final model
+    final_path = dirs['stage1'] / 'final.pt'
+    agent.save(str(final_path))
+    
+    # Save training history (pickle)
+    with open(dirs['stage1'] / 'training_history.pkl', 'wb') as f:
+        pickle.dump(train_history, f)
+    
+    # Save training history to CSV
+    # Use actual number of completed epochs (in case of early stopping)
+    actual_epochs = len(train_history['train_loss'])
+    loss_df = pd.DataFrame({
+        'epoch': range(1, actual_epochs + 1),
+        'train_loss': train_history['train_loss'],
+        'val_loss': train_history['val_loss'],
+        'bc_loss': train_history['bc_loss'],
+        'rl_loss': train_history['rl_loss'],
+        'val_mdape': train_history.get('val_mdape', [0] * actual_epochs)
+    })
+    loss_csv_path = dirs['stage1'] / 'loss_history.csv'
+    loss_df.to_csv(loss_csv_path, index=False)
+    print(f"✓ Loss history saved to CSV: {loss_csv_path}")
+    
+    print(f"\n✓ Stage 1 Complete: Offline Pre-training")
+    print(f"  Completed epochs: {actual_epochs}/{n_epochs}")
+    print(f"  Best validation loss: {best_val_loss:.4f}")
+    print(f"  Best validation MDAPE: {best_val_mdape:.2f}%")
+    if actual_epochs < n_epochs:
+        print(f"  Early stopping triggered at epoch {actual_epochs}")
+    if train_history.get('val_mdape'):
+        print(f"  Final validation MDAPE: {train_history['val_mdape'][-1]:.2f}%")
+    print(f"  Saved models:")
+    print(f"    - Best: {dirs['stage1'] / 'best_val.pt'}")
+    print(f"    - Final: {final_path}")
+
+    # Continue to simulator fine-tuning from the patient-level validation
+    # winner, not merely the final epoch.
+    agent.load(str(dirs['stage1'] / 'best_val.pt'))
+    print(f"  Restored validation-selected checkpoint for Stage 2")
+    
+    return agent
+
+
+def stage2_online_finetuning(
+    agent: QuantumDDPGAgent,
+    n_episodes: int,
+    warmup_episodes: int,
+    dirs: Dict[str, Path],
+    eval_interval: int,
+    seed: int,
+    env_class=None,
+    device: torch.device = None,
+    n_eval_patients: int = 10,
+    offline_bc_data: Optional[Dict[str, np.ndarray]] = None,
+    online_bc_weight: float = 0.0,
+    online_rl_scale: float = 0.05,
+    bc_action_weights: Optional[Sequence[float]] = None,
+    validation_seed: Optional[int] = None,
+    observation_interval_seconds: int = 60,
+    control_interval_seconds: int = 60,
+    train_patients: Optional[Sequence] = None,
+    validation_patients: Optional[Sequence] = None,
+    variability=None,
+    env_kwargs: Optional[Dict] = None,
+) -> QuantumDDPGAgent:
+    """
+    Stage 2: Online fine-tuning on simulator (NEW synthetic data).
+    
+    The agent explores beyond expert data and optimizes for reward.
+    
+    Args:
+        agent: Agent to fine-tune
+        n_episodes: Number of online episodes
+        warmup_episodes: Episodes without exploration noise
+        dirs: Dictionary with 'stage2' key for saving
+        eval_interval: Evaluation interval
+        seed: Random seed
+        env_class: Environment class to use (PropofolEnv or DualDrugEnv)
+        device: Torch device
+        env_kwargs: Extra DualDrugEnv settings (v3 residual mode and reward
+            weights) applied to every environment this stage builds:
+            sanity, training and checkpoint evaluation.
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Import environment classes
+    from environment.propofol_env import PropofolEnv
+    from environment.dual_drug_env import DualDrugEnv
+    
+    # Determine environment based on agent's action dimension
+    if env_class is None:
+        if agent.action_dim == 1:
+            env_class = PropofolEnv
+        elif agent.action_dim == 2:
+            env_class = DualDrugEnv
+        else:
+            raise ValueError(f"Unsupported action_dim: {agent.action_dim}")
+    
+    print("\n" + "="*70)
+    print("STAGE 2: ONLINE FINE-TUNING (Simulator - NEW Data!)")
+    print("="*70)
+    print(f"Device: {device}")
+    print(f"Environment: {env_class.__name__}")
+    print(f"Fine-tuning for {n_episodes} episodes on simulator")
+    print(f"Warmup (no exploration): {warmup_episodes} episodes")
+    if control_interval_seconds % observation_interval_seconds:
+        raise ValueError("control interval must be divisible by observation interval")
+    observations_per_control = (
+        control_interval_seconds // observation_interval_seconds)
+    observation_dt_min = observation_interval_seconds / 60.0
+    episode_observation_steps = int(round(360.0 / observation_dt_min))
+    print(f"Observation/control: {observation_interval_seconds}s/"
+          f"{control_interval_seconds}s; action held for "
+          f"{observations_per_control} observations; potential shaping "
+          f"once per decision ({observations_per_control} steps)")
+    print("Inter-individual variability: "
+          + ("none (v1 plant)" if variability is None
+             else f"on ({getattr(variability, 'source', '') or 'custom spec'})"))
+
+    env_settings = dict(env_kwargs or {})
+    if env_settings:
+        print(f"Environment settings: {sorted(env_settings)}")
+
+    def make_env(**kwargs):
+        return env_class(
+            dt=observation_dt_min,
+            max_steps=episode_observation_steps,
+            shaping_interval_steps=observations_per_control,
+            variability=variability,
+            **env_settings,
+            **kwargs,
+        )
+
+    if online_bc_weight > 0.0:
+        if offline_bc_data is None:
+            raise ValueError("online_bc_weight > 0 requires offline_bc_data")
+        if not hasattr(agent, 'configure_online_bc'):
+            raise TypeError("agent does not implement online TD3+BC")
+        temporal = getattr(agent, 'encoder', None) is not None
+        if not temporal and np.asarray(offline_bc_data["states"]).ndim == 3:
+            offline_bc_data = dict(offline_bc_data)
+            offline_bc_data["states"] = np.asarray(
+                offline_bc_data["states"])[:, -1, :]
+            offline_bc_data["next_states"] = np.asarray(
+                offline_bc_data["next_states"])[:, -1, :]
+        bc_dataset = (
+            PatientSequenceDataset(
+                offline_bc_data, sequence_length=agent.sequence_length)
+            if temporal else VitalDBDataset(offline_bc_data))
+        agent.configure_online_bc(
+            states=bc_dataset.states.numpy(),
+            actions=bc_dataset.actions.numpy(),
+            weight=online_bc_weight,
+            rl_scale=online_rl_scale,
+            action_weights=bc_action_weights)
+        print(
+            f"Online TD3+BC: weight={online_bc_weight:g}, "
+            f"RL scale={online_rl_scale:g}, action weights="
+            f"{list(bc_action_weights) if bc_action_weights is not None else 'uniform'} "
+            f"({len(bc_dataset):,} expert transitions)")
+    
+    # Create environment
+    # Sanity-check environment; its own seed block slot, never a training patient.
+    env = make_env(seed=training_env_seed(seed, 999))
+
+    # Decision-level shaping is potential-based only with the critic's gamma.
+    agent_gamma = getattr(agent, "gamma", env.gamma)
+    if abs(agent_gamma - env.gamma) > 1e-12:
+        raise ValueError(
+            f"agent gamma {agent_gamma} differs from the shaping gamma {env.gamma}")
+    # Train every arm with dropout off. v1 inherited the mode from stage 1's
+    # validation pass, so only the online-only arm (no stage 1) trained with
+    # dropout on.
+    for module_name in ("actor", "encoder", "critic"):
+        module = getattr(agent, module_name, None)
+        if module is not None:
+            module.eval()
+    
+    # Test: Verify that high-dose infusion actually reduces BIS
+    print("\n" + "="*70)
+    print("ENVIRONMENT TEST: HIGH-DOSE INFUSION EFFECT")
+    print("="*70)
+    test_state, _ = env.reset()
+    initial_bis = env.bis
+    print(f"Initial BIS: {initial_bis:.1f}")
+    print("Testing high-dose infusion for two control intervals...")
+    
+    test_actions = []
+    test_bis_values = [initial_bis]
+    for step in range(2 * observations_per_control):
+        if agent.action_dim == 2:
+            action = np.array([25.0, 0.7])  # High dose
+        else:
+            action = np.array([25.0])
+        test_actions.append(action)
+        next_state, reward, terminated, truncated, info = env.step(action)
+        bis = info.get('bis', 50 - next_state[0])
+        test_bis_values.append(bis)
+        if step < 5 or step >= 8:
+            print(f"  Step {step+1}: Action={action}, BIS={bis:.1f}, Reward={reward:.3f}")
+    
+    print(f"BIS trajectory: {' → '.join([f'{v:.1f}' for v in test_bis_values[:6]])} ... {' → '.join([f'{v:.1f}' for v in test_bis_values[-3:]])}")
+    print(f"Final BIS: {test_bis_values[-1]:.1f}")
+    print(f"BIS change: {initial_bis:.1f} → {test_bis_values[-1]:.1f} (Δ {test_bis_values[-1] - initial_bis:+.1f})")
+    
+    if test_bis_values[-1] >= initial_bis - 5:
+        print("⚠️  WARNING: BIS did not decrease significantly!")
+        print("   This suggests the simulator may not be responding to drug infusion.")
+    else:
+        print("✅ Environment test passed: BIS decreases with drug infusion")
+    print("="*70 + "\n")
+    
+    # One patient per episode. sim v2 passes training-split subjects; the
+    # synthetic uniform-demographic population is the v1 behaviour.
+    if train_patients is None:
+        print("Creating synthetic patient population for training (v1)...")
+        train_patients = create_patient_population(n_episodes, seed=seed)
+    else:
+        train_patients = list(train_patients)
+        if len(train_patients) < n_episodes:
+            raise ValueError(
+                f"{n_episodes} episodes need {n_episodes} patients, "
+                f"got {len(train_patients)}")
+        print(f"Using {n_episodes} training-split subjects for the simulator stage")
+    print(f"✓ {len(train_patients)} patients for {n_episodes} episodes")
+    
+    # Create initial environment for dimension checking
+    env = make_env(patient=train_patients[0], seed=training_env_seed(seed, 998))
+    
+    # Check if state padding is needed (e.g., for remifentanil history)
+    env_state_dim = env.observation_space.shape[0]
+    agent_state_dim = agent.state_dim
+    needs_padding = agent_state_dim > env_state_dim
+    
+    if needs_padding:
+        padding_dim = agent_state_dim - env_state_dim
+        print(f"\n⚠️  State dimension mismatch detected:")
+        print(f"  Environment: {env_state_dim}D")
+        print(f"  Agent: {agent_state_dim}D")
+        print(f"  Padding with {padding_dim} zeros (remifentanil features)")
+        
+        # Use FIXED remifentanil values for padding (not random!)
+        # Random noise causes agent confusion - use consistent values from offline training
+        remi_ce_fixed = 0.1  # Median from VitalDB training data
+        remi_rate_fixed = 0.2  # Median from VitalDB training data
+    
+    def pad_state(state: np.ndarray) -> np.ndarray:
+        """Pad state with remifentanil features if needed."""
+        if needs_padding:
+            # Use FIXED padding (not random!) to match offline training distribution
+            # This maintains consistency with what the agent learned offline
+            padding = np.array([remi_ce_fixed, remi_rate_fixed])
+            return np.concatenate([state, padding[:padding_dim]])
+        return state
+
+    def initialise_history(initial_state: np.ndarray):
+        history = deque(maxlen=agent.sequence_length)
+        history.append(np.asarray(initial_state, dtype=np.float32).copy())
+        return history
+
+    def history_array(history) -> np.ndarray:
+        observed = list(history)
+        return np.asarray(
+            [observed[0]] * (agent.sequence_length - len(observed)) + observed,
+            dtype=np.float32,
+        )
+    
+    # Create evaluation patients pool (large pool for better diversity)
+    # Sample different patients each evaluation to avoid overfitting to specific test set
+    n_eval_patients_pool = 2000  # Large pool covering diverse patient characteristics
+    eval_seed = seed + 1000 if validation_seed is None else validation_seed
+    if validation_patients is not None:
+        eval_patients_pool = list(validation_patients)
+        if len(eval_patients_pool) < n_eval_patients:
+            raise ValueError(
+                f"checkpoint cohort needs {n_eval_patients} patients, "
+                f"got {len(eval_patients_pool)}")
+        print(f"\n✓ Checkpoint cohort: {n_eval_patients} validation-split subjects")
+    else:
+        eval_patients_pool = create_patient_population(
+            n_eval_patients_pool, seed=eval_seed)
+        print(f"\n✓ Created evaluation patient pool: {n_eval_patients_pool} patients (will sample {n_eval_patients} each eval)")
+    
+    # ========== OPTION 3: SEPARATE REPLAY BUFFERS ==========
+    # Create separate buffers for warmup (exploration) and main (exploitation)
+    print("\n" + "="*70)
+    print("OPTION 3: SEPARATE REPLAY BUFFER STRATEGY")
+    print("="*70)
+    print("Creating two separate replay buffers:")
+    print(f"  1. Warmup Buffer (exploration): {warmup_episodes} episodes")
+    print(f"  2. Main Buffer (exploitation): {n_episodes - warmup_episodes} episodes")
+    print("Benefits:")
+    print("  ✓ Data isolation: No mixing of exploration and exploitation data")
+    print("  ✓ Gradient stability: Consistent learning signals per phase")
+    print("  ✓ Memory efficiency: Warmup buffer deleted after phase ends")
+    print("="*70 + "\n")
+    
+    from agents.quantum_agent import ReplayBuffer, SequenceReplayBuffer
+    temporal_replay = getattr(agent, 'encoder', None) is not None
+    replay_cls = SequenceReplayBuffer if temporal_replay else ReplayBuffer
+    replay_kwargs = ({'sequence_length': agent.sequence_length}
+                     if temporal_replay else {})
+    warmup_buffer = replay_cls(
+        capacity=50000, seed=seed, **replay_kwargs)  # Temporary exploration buffer
+    main_buffer = replay_cls(
+        capacity=100000, seed=seed + 1, **replay_kwargs)  # Long-term policy buffer
+    
+    # Track which buffer is currently active
+    current_buffer = None
+    warmup_buffer_stats = {'samples': 0, 'rewards': [], 'doses': []}
+    main_buffer_stats = {'samples': 0, 'rewards': [], 'doses': []}
+    
+    # Training metrics
+    episode_rewards = []
+    episode_mdape = []
+    episode_time_in_target = []
+    
+    best_reward = -float('inf')
+    best_mdape = float('inf')
+    
+    # Create file for logging episode rewards
+    rewards_log_path = dirs['stage2'] / 'episode_rewards.txt'
+    rewards_log_file = open(rewards_log_path, 'w')
+    
+    print(f"Starting online fine-tuning...")
+    print(f"Logging rewards to: {rewards_log_path}\n")
+    
+    # Training metrics tracking
+    episode_steps = []
+    episode_actor_losses = []
+    episode_critic_losses = []
+    episode_bc_losses = []
+    episode_rl_losses = []
+    
+    # Debug tracking for first few episodes
+    debug_episodes = []
+    
+    for episode in tqdm(range(n_episodes), desc="Online Fine-tuning"):
+        # Use different patient for each episode (prevents overfitting!)
+        current_patient = train_patients[episode]
+        # Distinct seed block per training run (v1 used seed + episode, so
+        # neighbouring runs shared 29 of 30 simulated patients).
+        env = make_env(patient=current_patient, seed=training_env_seed(seed, episode))
+        
+        state, _ = env.reset()
+        state = pad_state(state)  # Pad if needed
+        observation_history = initialise_history(state)
+        if hasattr(agent, 'reset'):
+            agent.reset()
+        else:
+            agent.reset_noise()
+        if hasattr(warmup_buffer, 'reset_episode'):
+            warmup_buffer.reset_episode()
+        if hasattr(main_buffer, 'reset_episode'):
+            main_buffer.reset_episode()
+        
+        episode_reward = 0.0
+        episode_step = 0
+        done = False
+        step_actor_losses = []
+        step_critic_losses = []
+        step_bc_losses = []
+        step_rl_losses = []
+        
+        # Enable exploration after warmup
+        add_noise = episode >= warmup_episodes
+        
+        # High-dose exploration for initial episodes (induction learning)
+        use_high_dose = episode < warmup_episodes  # First N episodes
+        
+        # Track detailed info for first 3 episodes
+        track_details = episode < 3
+        if track_details:
+            episode_info = {
+                'episode': episode,
+                'actions': [],
+                'bis_values': [],
+                'rewards': [],
+                'states': []
+            }
+        
+        while not done:
+            episode_step += 1
+            
+            if use_high_dose:
+                # Force moderate doses in early episodes to explore BIS 40-60 range
+                # Actions in physical units matching env action_space
+                # Target: Propofol 8-15 mg/kg/h, Remifentanil 0.2-0.5 μg/kg/min (for BIS 40-60)
+                if agent.action_dim == 2:
+                    action = np.array([
+                        np.random.uniform(8.0, 15.0),   # Propofol: 8-15 mg/kg/h (moderate for BIS 40-60)
+                        np.random.uniform(0.2, 0.5)     # Remifentanil: 0.2-0.5 μg/kg/min (moderate)
+                    ])
+                else:
+                    action = np.array([np.random.uniform(8.0, 15.0)])  # Single drug: 8-15 mg/kg/h
+            else:
+                # Select action from agent (with exploration noise if enabled)
+                # Agent returns scaled actions [0, action_scale] where action_scale=30.0
+                if temporal_replay:
+                    action = agent.select_action(
+                        state, add_noise=add_noise,
+                        state_sequence=history_array(observation_history))
+                else:
+                    action = agent.select_action(state, add_noise=add_noise)
+                # Clip to valid range (env action_space: [0-30, 0-1.0])
+                if agent.action_dim == 2:
+                    # Dual drug: clip each dimension separately
+                    action = np.array([
+                        np.clip(action[0], 0, 12.0),  # Propofol [0-12 mg/kg/h]
+                        np.clip(action[1], 0, 2.0)    # Remifentanil [0-2.0 μg/kg/min]
+                    ])
+                else:
+                    # Single drug: clip to [0-30 mg/kg/h]
+                    action = np.clip(action, 0, 30.0)
+
+            # Apply the environment bounds to every branch, including forced
+            # warmup exploration.  Previously warmup samples as high as
+            # 15 mg/kg/h were stored even though the environment executed 12.
+            if agent.action_dim == 2:
+                action = np.clip(action, [0.0, 0.0], [12.0, 2.0])
+                replay_action = np.array(
+                    [action[0] / 12.0, action[1] / 2.0], dtype=np.float32)
+            else:
+                action = np.clip(action, 0.0, agent.action_scale)
+                replay_action = np.asarray(
+                    action / agent.action_scale, dtype=np.float32)
+            
+            # Hold one action for the full control interval while retaining
+            # every 10-s observation in the temporal context.
+            replay_state = (
+                history_array(observation_history) if temporal_replay else state)
+            control_rewards = []
+            done = False
+            for _ in range(observations_per_control):
+                next_state, reward, terminated, truncated, info = env.step(action)
+                next_state = pad_state(next_state)
+                observation_history.append(
+                    np.asarray(next_state, dtype=np.float32).copy())
+                control_rewards.append(float(reward))
+                done = terminated or truncated
+                if done:
+                    break
+            reward = float(np.sum(control_rewards))
+            replay_next_state = (
+                history_array(observation_history)
+                if temporal_replay else next_state)
+            # Logs report the dose the environment applied: in the v3 residual
+            # mode the policy's action is a residual on the PID (2026-10-21
+            # review). The replay buffer keeps the policy's action.
+            applied = np.asarray(info.get('applied_action', action), dtype=float)
+
+            # Track details
+            if track_details:
+                bis = info.get('bis', 50 - state[0])  # state[0] is BIS_error
+                episode_info['actions'].append(applied.copy())
+                episode_info['bis_values'].append(bis)
+                episode_info['rewards'].append(reward)
+                episode_info['states'].append(state[0])  # BIS error
+            
+            # ========== OPTION 3: PHASE-SPECIFIC BUFFER STORAGE ==========
+            if use_high_dose:
+                # Warmup phase: Store in warmup_buffer for exploration learning
+                warmup_buffer.push(
+                    replay_state, replay_action, reward, replay_next_state, done)
+                warmup_buffer_stats['samples'] += 1
+                warmup_buffer_stats['rewards'].append(reward)
+                if agent.action_dim == 2:
+                    warmup_buffer_stats['doses'].append(applied[0])  # Track propofol dose
+                
+                # Train from warmup buffer only
+                if len(warmup_buffer) >= agent.batch_size:
+                    # Temporarily swap agent's buffer
+                    original_buffer = agent.replay_buffer
+                    agent.replay_buffer = warmup_buffer
+                    update_metrics = agent.update()
+                    if update_metrics:
+                        step_actor_losses.append(update_metrics.get('actor_loss', np.nan))
+                        step_critic_losses.append(update_metrics.get('critic_loss', np.nan))
+                        step_bc_losses.append(update_metrics.get('actor_bc_loss', np.nan))
+                        step_rl_losses.append(update_metrics.get('actor_rl_loss', np.nan))
+                    agent.replay_buffer = original_buffer
+            else:
+                # Main phase: Store in main_buffer for policy improvement
+                main_buffer.push(
+                    replay_state, replay_action, reward, replay_next_state, done)
+                main_buffer_stats['samples'] += 1
+                main_buffer_stats['rewards'].append(reward)
+                if agent.action_dim == 2:
+                    main_buffer_stats['doses'].append(applied[0])  # Track propofol dose
+                
+                # Train from main buffer only
+                if len(main_buffer) >= agent.batch_size:
+                    # Temporarily swap agent's buffer
+                    original_buffer = agent.replay_buffer
+                    agent.replay_buffer = main_buffer
+                    update_metrics = agent.update()
+                    if update_metrics:
+                        step_actor_losses.append(update_metrics.get('actor_loss', np.nan))
+                        step_critic_losses.append(update_metrics.get('critic_loss', np.nan))
+                        step_bc_losses.append(update_metrics.get('actor_bc_loss', np.nan))
+                        step_rl_losses.append(update_metrics.get('actor_rl_loss', np.nan))
+                    agent.replay_buffer = original_buffer
+            
+            episode_reward += reward
+            state = next_state
+        
+        # Save debug info
+        if track_details:
+            debug_episodes.append(episode_info)
+        
+        # ========== OPTION 3: WARMUP PHASE TRANSITION ==========
+        # Check if warmup just ended (first episode after warmup)
+        if episode == warmup_episodes:
+            print("\n" + "="*70)
+            print("WARMUP PHASE COMPLETE - BUFFER TRANSITION")
+            print("="*70)
+            print(f"Warmup Buffer Statistics:")
+            print(f"  Total samples: {warmup_buffer_stats['samples']}")
+            if warmup_buffer_stats['rewards']:
+                print(f"  Avg reward: {np.mean(warmup_buffer_stats['rewards']):.2f}")
+                print(f"  Reward range: [{np.min(warmup_buffer_stats['rewards']):.2f}, {np.max(warmup_buffer_stats['rewards']):.2f}]")
+            if warmup_buffer_stats['doses']:
+                print(f"  Avg propofol dose: {np.mean(warmup_buffer_stats['doses']):.2f} mg/kg/h")
+                print(f"  Dose range: [{np.min(warmup_buffer_stats['doses']):.2f}, {np.max(warmup_buffer_stats['doses']):.2f}] mg/kg/h")
+            
+            print(f"\n🗑️  Deleting warmup buffer to free memory...")
+            warmup_buffer_size = len(warmup_buffer)
+            del warmup_buffer  # Free memory
+            warmup_buffer = None  # Prevent accidental access
+            print(f"  ✓ Freed {warmup_buffer_size} samples from memory")
+            
+            print(f"\n✨ Switching to Main Buffer (clean slate for policy learning)")
+            print(f"  Main buffer size: {len(main_buffer)} samples")
+            print(f"  Training will now use ONLY agent's policy data")
+            print("="*70 + "\n")
+        
+        # Decay exploration noise
+        if add_noise:
+            agent.decay_noise()
+        
+        # Record metrics
+        episode_steps.append(episode_step)
+        if hasattr(env, 'get_episode_metrics'):
+            metrics = env.get_episode_metrics()
+            episode_mdape.append(metrics.get('mdape', 0))
+            episode_time_in_target.append(metrics.get('time_in_target', 0))
+        else:
+            # For environments without get_episode_metrics, use placeholder values
+            episode_mdape.append(0)
+            episode_time_in_target.append(0)
+        
+        episode_rewards.append(episode_reward)
+        episode_actor_losses.append(float(np.nanmean(step_actor_losses))
+                                    if step_actor_losses else np.nan)
+        episode_critic_losses.append(float(np.nanmean(step_critic_losses))
+                                     if step_critic_losses else np.nan)
+        episode_bc_losses.append(float(np.nanmean(step_bc_losses))
+                                 if step_bc_losses else np.nan)
+        episode_rl_losses.append(float(np.nanmean(step_rl_losses))
+                                 if step_rl_losses else np.nan)
+        
+        # 매 episode 간단한 로그 (10 episode마다)
+        if (episode + 1) % 10 == 0 or episode == 0:
+            if use_high_dose:
+                noise_status = "HighDose"
+            elif add_noise:
+                noise_status = "Explore"
+            else:
+                noise_status = "Warmup"
+            recent_reward = np.mean(episode_rewards[-10:]) if len(episode_rewards) >= 10 else episode_reward
+            print(f"Ep {episode+1:4d}/{n_episodes} [{noise_status:8s}] | Reward: {episode_reward:7.2f} (avg: {recent_reward:7.2f}) | Steps: {episode_step:3d}")
+        
+        # Log reward to file
+        rewards_log_file.write(f"{episode_reward}\n")
+        rewards_log_file.flush()
+        
+        # Periodic evaluation
+        if (episode + 1) % eval_interval == 0 or episode == n_episodes - 1:
+            avg_reward = np.mean(episode_rewards[-eval_interval:])
+            avg_mdape = np.mean(episode_mdape[-eval_interval:])
+            avg_tit = np.mean(episode_time_in_target[-eval_interval:])
+            
+            # Use one fixed seeded validation cohort at every checkpoint so
+            # changes over time are comparable rather than confounded by a
+            # different patient draw.
+            eval_patients = eval_patients_pool[:n_eval_patients]
+            
+            eval_rewards = []
+            eval_mdapes = []
+            for eval_index, patient in enumerate(eval_patients):
+                # One environment per patient. v1 called
+                # env.reset(options={'patient': patient}), which DualDrugEnv
+                # ignores, so every "patient" was the last training patient.
+                eval_env = make_env(
+                    patient=patient, seed=checkpoint_env_seed(eval_seed, eval_index))
+                state, _ = eval_env.reset()
+                state = pad_state(state)  # Pad if needed
+                eval_history = initialise_history(state)
+                if hasattr(agent, 'reset'):
+                    agent.reset()
+                episode_reward = 0
+                done = False
+                
+                while not done:
+                    if temporal_replay:
+                        action = agent.select_action(
+                            state, deterministic=True,
+                            state_sequence=history_array(eval_history))
+                    else:
+                        action = agent.select_action(state, deterministic=True)
+                    # action already in physical units [0-30 mg/kg/h, 0-1.0 μg/kg/min]
+                    action_clipped = np.clip(action, [0, 0], [12.0, 2.0]) if agent.action_dim == 2 else np.clip(action, 0, 12.0)
+                    for _ in range(observations_per_control):
+                        next_state, reward, terminated, truncated, _ = eval_env.step(
+                            action_clipped)
+                        next_state = pad_state(next_state)
+                        eval_history.append(
+                            np.asarray(next_state, dtype=np.float32).copy())
+                        done = terminated or truncated
+                        episode_reward += reward
+                        if done:
+                            break
+                    state = next_state
+
+                if hasattr(eval_env, 'get_episode_metrics'):
+                    metrics = eval_env.get_episode_metrics()
+                    eval_mdapes.append(metrics['mdape'])
+                eval_rewards.append(episode_reward)
+            
+            print(f"\n  {'='*60}")
+            print(f"  Episode {episode+1}/{n_episodes} Evaluation:")
+            print(f"  {'='*60}")
+            print(f"  Training Performance (last {eval_interval} episodes):")
+            print(f"    - Avg Reward:        {avg_reward:7.2f}")
+            print(f"    - Min/Max Reward:    {np.min(episode_rewards[-eval_interval:]):7.2f} / {np.max(episode_rewards[-eval_interval:]):7.2f}")
+            if hasattr(env, 'get_episode_metrics'):
+                print(f"    - Avg MDAPE:         {avg_mdape:7.2f}%")
+                print(f"    - Avg Time in Target: {avg_tit:6.1f}%")
+            print(f"    - Avg Steps:         {np.mean(episode_steps[-eval_interval:]):.1f}")
+            if eval_mdapes:
+                print(f"  Test Performance ({n_eval_patients} patients):")
+                print(f"    - MDAPE:             {np.mean(eval_mdapes):7.2f}% ± {np.std(eval_mdapes):.2f}%")
+                print(f"    - Rewards:           {np.mean(eval_rewards):7.2f} ± {np.std(eval_rewards):.2f}")
+            print(f"  {'='*60}")
+            
+            # Save best models
+            if avg_reward > best_reward:
+                best_reward = avg_reward
+                agent.save(str(dirs['stage2'] / 'best_reward.pt'))
+                print(f"    → New best reward: {best_reward:.2f}")
+            
+            eval_mean_mdape = (float(np.mean(eval_mdapes))
+                               if eval_mdapes else float('inf'))
+            if eval_mean_mdape < best_mdape:
+                best_mdape = eval_mean_mdape
+                agent.save(str(dirs['stage2'] / 'best_mdape.pt'))
+                print(f"    → New best fixed-cohort MDAPE: {best_mdape:.2f}%")
+    
+    # Save final model
+    final_path = dirs['stage2'] / 'final.pt'
+    agent.save(str(final_path))
+    
+    # Close rewards log file
+    rewards_log_file.close()
+    
+    # ========== OPTION 3: FINAL BUFFER STATISTICS ==========
+    print("\n" + "="*70)
+    print("FINAL BUFFER STATISTICS")
+    print("="*70)
+    if warmup_buffer_stats['samples'] > 0:
+        print(f"Warmup Phase (Episodes 0-{warmup_episodes-1}):")
+        print(f"  Total samples: {warmup_buffer_stats['samples']}")
+        if warmup_buffer_stats['rewards']:
+            print(f"  Avg reward: {np.mean(warmup_buffer_stats['rewards']):.2f}")
+        print(f"  Status: ❌ Deleted (no longer in memory)")
+    
+    if main_buffer_stats['samples'] > 0:
+        print(f"\nMain Phase (Episodes {warmup_episodes}-{n_episodes-1}):")
+        print(f"  Total samples: {main_buffer_stats['samples']}")
+        if main_buffer_stats['rewards']:
+            print(f"  Avg reward: {np.mean(main_buffer_stats['rewards']):.2f}")
+            print(f"  Reward range: [{np.min(main_buffer_stats['rewards']):.2f}, {np.max(main_buffer_stats['rewards']):.2f}]")
+        if main_buffer_stats['doses']:
+            print(f"  Avg propofol dose: {np.mean(main_buffer_stats['doses']):.2f} mg/kg/h")
+        print(f"  Status: ✓ Active (in agent's memory)")
+    print("="*70 + "\n")
+    
+    # Print debug information for first 3 episodes
+    if debug_episodes:
+        print("\n" + "="*70)
+        print("DEBUG: FIRST 3 EPISODES DETAILED ANALYSIS")
+        print("="*70)
+        for ep_info in debug_episodes:
+            ep_num = ep_info['episode']
+            actions = np.array(ep_info['actions'])
+            bis_values = np.array(ep_info['bis_values'])
+            rewards = np.array(ep_info['rewards'])
+            
+            print(f"\n📊 Episode {ep_num}:")
+            print(f"  Initial BIS: {bis_values[0]:.1f}")
+            print(f"  Final BIS: {bis_values[-1]:.1f}")
+            print(f"  BIS change: {bis_values[0]:.1f} → {bis_values[-1]:.1f} (Δ {bis_values[-1] - bis_values[0]:+.1f})")
+            print(f"  Steps: {len(actions)}")
+            
+            if len(actions[0]) == 2:
+                print(f"  Propofol (mg/kg/h):")
+                print(f"    Mean: {actions[:, 0].mean():.2f}, Range: [{actions[:, 0].min():.2f}, {actions[:, 0].max():.2f}]")
+                print(f"  Remifentanil (μg/kg/min):")
+                print(f"    Mean: {actions[:, 1].mean():.3f}, Range: [{actions[:, 1].min():.3f}, {actions[:, 1].max():.3f}]")
+            else:
+                print(f"  Propofol (mg/kg/h):")
+                print(f"    Mean: {actions.mean():.2f}, Range: [{actions.min():.2f}, {actions.max():.2f}]")
+            
+            print(f"  Rewards:")
+            print(f"    Total: {rewards.sum():.2f}")
+            print(f"    Mean: {rewards.mean():.3f}")
+            print(f"    Range: [{rewards.min():.3f}, {rewards.max():.3f}]")
+            
+            # BIS trajectory over time
+            if len(bis_values) <= 20:
+                print(f"  BIS trajectory: {', '.join([f'{v:.1f}' for v in bis_values])}")
+            else:
+                # Show first 10 and last 10
+                first_10 = ', '.join([f'{v:.1f}' for v in bis_values[:10]])
+                last_10 = ', '.join([f'{v:.1f}' for v in bis_values[-10:]])
+                print(f"  BIS trajectory (first 10): {first_10}")
+                print(f"  BIS trajectory (last 10):  {last_10}")
+        print("="*70 + "\n")
+    
+    # Save training history (pickle)
+    history = {
+        'rewards': episode_rewards,
+        'mdape': episode_mdape,
+        'time_in_target': episode_time_in_target,
+        'actor_loss': episode_actor_losses,
+        'critic_loss': episode_critic_losses,
+        'actor_bc_loss': episode_bc_losses,
+        'actor_rl_loss': episode_rl_losses,
+    }
+    with open(dirs['stage2'] / 'training_history.pkl', 'wb') as f:
+        pickle.dump(history, f)
+    
+    # Save training history to CSV
+    episode_df = pd.DataFrame({
+        'episode': range(1, n_episodes + 1),
+        'reward': episode_rewards,
+        'mdape': episode_mdape,
+        'time_in_target': episode_time_in_target,
+        'actor_loss': episode_actor_losses,
+        'critic_loss': episode_critic_losses,
+        'actor_bc_loss': episode_bc_losses,
+        'actor_rl_loss': episode_rl_losses,
+        'steps': episode_steps,
+        'phase': ['warmup' if i < warmup_episodes else 'exploration' for i in range(n_episodes)]
+    })
+    episode_csv_path = dirs['stage2'] / 'episode_history.csv'
+    episode_df.to_csv(episode_csv_path, index=False)
+    print(f"✓ Episode history saved to CSV: {episode_csv_path}")
+    
+    print(f"\n✓ Stage 2 Complete: Online Fine-tuning")
+    print(f"  Best reward: {best_reward:.2f}")
+    if hasattr(env, 'get_episode_metrics'):
+        print(f"  Best MDAPE: {best_mdape:.2f}%")
+    print(f"  Best MDAPE: {best_mdape:.2f}%")
+    print(f"  Saved models:")
+    print(f"    - Best reward: {dirs['stage2'] / 'best_reward.pt'}")
+    print(f"    - Best MDAPE: {dirs['stage2'] / 'best_mdape.pt'}")
+    print(f"    - Final: {final_path}")
+
+    best_mdape_path = dirs['stage2'] / 'best_mdape.pt'
+    if best_mdape_path.exists():
+        agent.load(str(best_mdape_path))
+        print("  Restored fixed-cohort validation checkpoint for evaluation")
+    
+    env.close()
+    return agent
+
+
+def stage3_testing(
+    agent_pretrained: QuantumDDPGAgent,
+    agent_finetuned: QuantumDDPGAgent,
+    vitaldb_test_data: Dict,
+    dirs: Dict[str, Path],
+    seed: int,
+    device: torch.device = None
+):
+    """
+    Stage 3: Testing on BOTH VitalDB test set AND simulator test set.
+    
+    Compares pre-trained (offline only) vs fine-tuned (offline + online).
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    print("\n" + "="*70)
+    print("STAGE 3: TESTING & COMPARISON")
+    print("="*70)
+    print(f"Device: {device}")
+    
+    results = {
+        'pretrained': {},
+        'finetuned': {}
+    }
+    
+    # ========================================
+    # Test 1: VitalDB Test Set (Real Data)
+    # ========================================
+    print("\n[Test 1] VitalDB Test Set (Real Patient Data - 10%)")
+    print("-" * 70)
+    
+    test_states = vitaldb_test_data['states']
+    
+    def evaluate_on_vitaldb(agent, name):
+        predicted_actions = []
+        ground_truth_actions = []
+        
+        # Evaluate action prediction accuracy
+        for i in range(0, min(1000, len(test_states)), 5):  # Sample every 5th
+            state = test_states[i]
+            action = vitaldb_test_data['actions'][i]
+            
+            # Get predicted action from agent (returns physical units [0-30 mg/kg/h])
+            pred_action = agent.select_action(state, deterministic=True)
+            # Normalize to [0, 1] for comparison with VitalDB data
+            pred_action_normalized = pred_action / 30.0 if agent.action_dim == 1 else np.array([pred_action[0] / 30.0, pred_action[1] / 1.0])
+            
+            predicted_actions.append(pred_action_normalized[0] if len(pred_action_normalized) > 0 else pred_action_normalized)
+            ground_truth_actions.append(action[0] if len(action) > 0 else action)
+        
+        predicted_actions = np.array(predicted_actions)
+        ground_truth_actions = np.array(ground_truth_actions)
+        
+        # Calculate MDAPE (Median Absolute Percentage Error)
+        ape = np.abs(predicted_actions - ground_truth_actions) / (np.abs(ground_truth_actions) + 1e-8) * 100
+        mdape = np.median(ape)
+        mae = np.mean(np.abs(predicted_actions - ground_truth_actions))
+        
+        print(f"  {name}:")
+        print(f"    Action MDAPE: {mdape:.2f}%")
+        print(f"    Action MAE: {mae:.4f}")
+        print(f"    Pred range: [{predicted_actions.min():.4f}, {predicted_actions.max():.4f}]")
+        print(f"    True range: [{ground_truth_actions.min():.4f}, {ground_truth_actions.max():.4f}]")
+        
+        return mdape
+    
+    pretrained_error = evaluate_on_vitaldb(agent_pretrained, "Pre-trained (Offline only)")
+    finetuned_error = evaluate_on_vitaldb(agent_finetuned, "Fine-tuned (Offline + Online)")
+    
+    results['vitaldb'] = {
+        'pretrained_mdape': pretrained_error,
+        'finetuned_mdape': finetuned_error,
+        'improvement': pretrained_error - finetuned_error
+    }
+    
+    print(f"\n  MDAPE Improvement: {results['vitaldb']['improvement']:.2f}% (lower is better)")
+    
+    # ========================================
+    # Test 2: Simulator Test Set (Synthetic)
+    # ========================================
+    print("\n[Test 2] Simulator Test Set (20 Diverse Synthetic Patients)")
+    print("-" * 70)
+    
+    from environment.patient_simulator import create_patient_population
+    test_patients = create_patient_population(20, seed=seed + 2000)
+    env = PropofolEnv(seed=seed)
+    
+    def evaluate_on_simulator(agent, name):
+        rewards = []
+        mdapes = []
+        times_in_target = []
+        
+        for patient in test_patients:
+            state, _ = env.reset(options={'patient': patient})
+            episode_reward = 0
+            done = False
+            
+            while not done:
+                action = agent.select_action(state, deterministic=True)
+                # action already in physical units, just clip to valid range
+                action_clipped = np.clip(action, [0, 0], [30.0, 1.0]) if hasattr(action, '__len__') and len(action) == 2 else np.clip(action, 0, 30.0)
+                next_state, reward, terminated, truncated, _ = env.step(action_clipped)
+                done = terminated or truncated
+                episode_reward += reward
+                state = next_state
+            
+            metrics = env.get_episode_metrics()
+            rewards.append(episode_reward)
+            mdapes.append(metrics['mdape'])
+            times_in_target.append(metrics['time_in_target'])
+        
+        print(f"  {name}:")
+        print(f"    Mean Reward: {np.mean(rewards):.2f} ± {np.std(rewards):.2f}")
+        print(f"    Mean MDAPE: {np.mean(mdapes):.2f}% ± {np.std(mdapes):.2f}%")
+        print(f"    Mean Time in Target: {np.mean(times_in_target):.1f}%")
+        
+        return {
+            'reward': np.mean(rewards),
+            'mdape': np.mean(mdapes),
+            'time_in_target': np.mean(times_in_target)
+        }
+    
+    pretrained_sim = evaluate_on_simulator(agent_pretrained, "Pre-trained (Offline only)")
+    finetuned_sim = evaluate_on_simulator(agent_finetuned, "Fine-tuned (Offline + Online)")
+    
+    results['simulator'] = {
+        'pretrained': pretrained_sim,
+        'finetuned': finetuned_sim,
+        'reward_improvement': finetuned_sim['reward'] - pretrained_sim['reward'],
+        'mdape_improvement': pretrained_sim['mdape'] - finetuned_sim['mdape']
+    }
+    
+    print(f"\n  Improvements from fine-tuning:")
+    print(f"    Reward: +{results['simulator']['reward_improvement']:.2f}")
+    print(f"    MDAPE: -{results['simulator']['mdape_improvement']:.2f}% (lower is better)")
+    
+    env.close()
+    
+    # ========================================
+    # Save Results
+    # ========================================
+    with open(dirs['stage3'] / 'test_results.pkl', 'wb') as f:
+        pickle.dump(results, f)
+    
+    print(f"\n✓ Stage 3 Complete: Testing")
+    print(f"  Results saved: {dirs['stage3'] / 'test_results.pkl'}")
+    
+    return results
+
+
+def main():
+    args = parse_args()
+    
+    # Set random seeds
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+    
+    # Set default dtype to float32 to avoid Double/Float mismatch
+    torch.set_default_dtype(torch.float32)
+    
+    # Set device (GPU if available)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"\n{'='*70}")
+    print(f"DEVICE CONFIGURATION")
+    print(f"{'='*70}")
+    print(f"  Using device: {device}")
+    if torch.cuda.is_available():
+        print(f"  GPU: {torch.cuda.get_device_name(0)}")
+        print(f"  CUDA version: {torch.version.cuda}")
+        print(f"  Available memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    print(f"{'='*70}\n")
+    
+    # Load config
+    with open(args.config, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+    
+    # Add device to config
+    config['device'] = str(device)
+    
+    # Setup directories
+    dirs = setup_directories(args.log_dir)
+    
+    # Save config
+    with open(dirs['base'] / 'config.yaml', 'w', encoding='utf-8') as f:
+        yaml.dump(config, f)
+    
+    # Save args
+    with open(dirs['base'] / 'args.txt', 'w', encoding='utf-8') as f:
+        for arg, value in vars(args).items():
+            f.write(f"{arg}: {value}\n")
+    
+    print("\n" + "="*70)
+    print("HYBRID QUANTUM RL TRAINING")
+    print("="*70)
+    print(f"\nConfiguration:")
+    print(f"  VitalDB cases: {args.n_cases}")
+    print(f"  Offline epochs: {args.offline_epochs}")
+    print(f"  Online episodes: {args.online_episodes}")
+    print(f"  Encoder: {args.encoder}")
+    print(f"  Seed: {args.seed}")
+    print(f"  Log directory: {dirs['base']}")
+    print("="*70)
+    
+    # ========================================
+    # Data Loading & Splitting
+    # ========================================
+    train_data, val_data, test_data = split_vitaldb_data(
+        n_total_cases=args.n_cases,
+        data_path=args.data_path,
+        dual_drug=args.dual_drug
+    )
+    
+    # Determine state and action dimensions from data
+    state_dim = train_data['states'].shape[1] if len(train_data['states'].shape) > 1 else 1
+    action_dim = train_data['actions'].shape[1] if len(train_data['actions'].shape) > 1 else 1
+    
+    print(f"\n✓ Data dimensions:")
+    print(f"  State dim: {state_dim} ({'dual drug' if args.dual_drug else 'single drug'})")
+    print(f"  Action dim: {action_dim}")
+    
+    # ========================================
+    # Stage 1: Offline Pre-training
+    # ========================================
+    if args.skip_offline:
+        if not args.resume:
+            print("\nError: --resume required when --skip_offline is used")
+            return
+        
+        print(f"\nSkipping offline training, loading from: {args.resume}")
+        agent = QuantumDDPGAgent(
+            state_dim=state_dim,
+            action_dim=action_dim,
+            config=config,
+            encoder_type=args.encoder,
+            seed=args.seed
+        )
+        agent.load(args.resume)
+    else:
+        # Create agent
+        agent = QuantumDDPGAgent(
+            state_dim=state_dim,
+            action_dim=action_dim,
+            config=config,
+            encoder_type=args.encoder,
+            seed=args.seed
+        )
+        
+        # Move agent to device first
+        agent.actor = agent.actor.to(device)
+        agent.actor_target = agent.actor_target.to(device)
+        agent.critic = agent.critic.to(device)
+        agent.critic_target = agent.critic_target.to(device)
+        
+        # Convert all networks and parameters to float32
+        agent.actor.float()
+        agent.actor_target.float()
+        agent.critic.float()
+        agent.critic_target.float()
+        
+        # Convert all parameters to float32 (including VQC parameters)
+        for param in agent.actor.parameters():
+            param.data = param.data.float()
+        for param in agent.actor_target.parameters():
+            param.data = param.data.float()
+        for param in agent.critic.parameters():
+            param.data = param.data.float()
+        for param in agent.critic_target.parameters():
+            param.data = param.data.float()
+        
+        # Print quantum info
+        q_info = agent.get_quantum_info()
+        print(f"\n✓ Quantum Actor initialized:")
+        print(f"  Qubits: {q_info['n_qubits']}")
+        print(f"  Layers: {q_info['n_layers']}")
+        print(f"  Parameters: {q_info['n_params']}")
+        print(f"  Device: {device}")
+        
+        # Train offline
+        agent = stage1_offline_pretraining(
+            agent=agent,
+            train_data=train_data,
+            val_data=val_data,
+            n_epochs=args.offline_epochs,
+            batch_size=args.batch_size,
+            bc_weight=float(args.bc_weight),
+            dirs=dirs,
+            eval_interval=args.eval_interval,
+            device=device
+        )
+    
+    # Save pre-trained agent for comparison
+    agent_pretrained = QuantumDDPGAgent(
+        state_dim=state_dim,
+        action_dim=action_dim,
+        config=config,
+        encoder_type=args.encoder,
+        seed=args.seed
+    )
+    if args.skip_offline:
+        agent_pretrained.load(args.resume)
+    else:
+        agent_pretrained.load(str(dirs['stage1'] / 'best_val.pt'))
+    
+    # ========================================
+    # Stage 2: Online Fine-tuning
+    # ========================================
+    if args.skip_online:
+        print("\nSkipping online fine-tuning")
+        agent_finetuned = agent_pretrained
+    else:
+        agent_finetuned = stage2_online_finetuning(
+            agent=agent,
+            n_episodes=args.online_episodes,
+            warmup_episodes=args.warmup_episodes,
+            dirs=dirs,
+            eval_interval=args.eval_interval,
+            seed=args.seed,
+            device=device
+        )
+        
+        # Load best fine-tuned model for testing
+        best_finetuned = QuantumDDPGAgent(
+            state_dim=state_dim,
+            action_dim=action_dim,
+            config=config,
+            encoder_type=args.encoder,
+            seed=args.seed
+        )
+        best_finetuned.load(str(dirs['stage2'] / 'best_mdape.pt'))
+        agent_finetuned = best_finetuned
+    
+    # ========================================
+    # Stage 3: Testing
+    # ========================================
+    results = stage3_testing(
+        agent_pretrained=agent_pretrained,
+        agent_finetuned=agent_finetuned,
+        vitaldb_test_data=test_data,
+        dirs=dirs,
+        seed=args.seed,
+        device=device
+    )
+    
+    # ========================================
+    # Final Summary
+    # ========================================
+    print("\n" + "="*70)
+    print("✓ HYBRID TRAINING COMPLETE!")
+    print("="*70)
+    print("\nFinal Results:")
+    print(f"  VitalDB Test Set:")
+    print(f"    Improvement: {results['vitaldb']['improvement']:.2f} BIS error reduction")
+    print(f"  Simulator Test Set:")
+    print(f"    Reward improvement: +{results['simulator']['reward_improvement']:.2f}")
+    print(f"    MDAPE improvement: -{results['simulator']['mdape_improvement']:.2f}%")
+    
+    print(f"\nSaved models:")
+    print(f"  Stage 1 (Offline):")
+    print(f"    - {dirs['stage1'] / 'best_val.pt'}")
+    print(f"  Stage 2 (Online):")
+    print(f"    - {dirs['stage2'] / 'best_mdape.pt'}")
+    print(f"    - {dirs['stage2'] / 'best_reward.pt'}")
+    print("="*70)
+
+
+if __name__ == "__main__":
+    main()

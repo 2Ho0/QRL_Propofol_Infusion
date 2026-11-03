@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local environments, tools and editor settings
+.venv*/
+.tools/
+.vscode/
+.claude/
+
+# Data are downloaded from VitalDB and NHANES (see README)
+/data/
+*.pkl
+
+# Run outputs. Only the three run inputs under logs/revision_v2/ (see README)
+# are tracked; they are added with `git add -f`.
+/logs/
+
+# Not part of the code release: manuscript sources, internal notes and
+# archived legacy code
+/paper/
+/docs/
+/archive/

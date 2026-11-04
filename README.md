@@ -60,6 +60,7 @@ Other experiments use the trained controllers:
 |---|---|
 | `evaluate_noise_v2.py` | runs the quantum policies with finite shots, gate noise and readout errors |
 | `evaluate_eleveld_mismatch.py` | tests on patients who follow other drug models (Eleveld) |
+| `evaluate_timecourse.py` | records BIS and the infusion rates over time for QRL and the tuned PID, with the training drug models and with Eleveld |
 | `evaluate_external_cohort.py` | tests on 600 adults from NHANES |
 | `run_propofol_only.py` | single-drug comparison: propofol is controlled, remifentanil follows the clinical record |
 | `profile_v3_compute.py` | measures inference time, update time and memory |
